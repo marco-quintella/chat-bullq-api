@@ -3,9 +3,9 @@ import { Channel } from '@prisma/client';
 import axios, { AxiosInstance } from 'axios';
 
 interface InstagramConfig {
-  pageAccessToken: string;
-  pageId: string;
-  igUserId?: string;
+  accessToken: string;
+  igBusinessId?: string;
+  appSecret?: string;
   apiVersion?: string;
 }
 
@@ -16,9 +16,9 @@ export class InstagramHttpClient {
   private getConfig(channel: Channel): InstagramConfig {
     const config = channel.config as Record<string, any>;
     return {
-      pageAccessToken: config.pageAccessToken,
-      pageId: config.pageId,
-      igUserId: config.igUserId,
+      accessToken: config.accessToken || config.pageAccessToken,
+      igBusinessId: config.igBusinessId || config.igUserId,
+      appSecret: config.appSecret,
       apiVersion: config.apiVersion || 'v21.0',
     };
   }
@@ -26,43 +26,117 @@ export class InstagramHttpClient {
   private createClient(channel: Channel): AxiosInstance {
     const cfg = this.getConfig(channel);
     return axios.create({
-      baseURL: `https://graph.facebook.com/${cfg.apiVersion}`,
-      params: { access_token: cfg.pageAccessToken },
+      baseURL: `https://graph.instagram.com/${cfg.apiVersion}`,
+      params: { access_token: cfg.accessToken },
       timeout: 30000,
     });
+  }
+
+  async getMe(channel: Channel): Promise<any> {
+    const client = this.createClient(channel);
+    try {
+      const { data } = await client.get('/me', {
+        params: { fields: 'id,user_id,username,account_type,name' },
+      });
+      return data;
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'getMe');
+    }
+  }
+
+  async resolveBusinessId(channel: Channel): Promise<string | null> {
+    const cfg = this.getConfig(channel);
+    if (cfg.igBusinessId) return cfg.igBusinessId;
+    try {
+      const info = await this.getMe(channel);
+      return info?.user_id ?? info?.id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async sendMessage(
     channel: Channel,
     payload: Record<string, any>,
   ): Promise<any> {
-    const cfg = this.getConfig(channel);
     const client = this.createClient(channel);
     try {
-      const { data } = await client.post(
-        `/${cfg.pageId}/messages`,
-        payload,
-      );
+      const { data } = await client.post('/me/messages', payload);
       return data;
-    } catch (error: any) {
-      this.logger.error(
-        `Instagram API error: ${error.response?.data?.error?.message || error.message}`,
-      );
-      throw error;
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'sendMessage');
     }
   }
 
-  async getPageInfo(channel: Channel): Promise<any> {
-    const cfg = this.getConfig(channel);
+  async listConversations(
+    channel: Channel,
+    cursor?: string,
+    limit = 50,
+  ): Promise<{ data: any[]; nextCursor?: string }> {
+    const client = this.createClient(channel);
+    const params: Record<string, any> = {
+      platform: 'instagram',
+      fields: 'id,updated_time,participants',
+      limit,
+    };
+    if (cursor) params.after = cursor;
+
+    try {
+      const { data } = await client.get('/me/conversations', { params });
+      return {
+        data: data?.data ?? [],
+        nextCursor: data?.paging?.cursors?.after && data?.paging?.next ? data.paging.cursors.after : undefined,
+      };
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'listConversations');
+    }
+  }
+
+  async listConversationMessages(
+    channel: Channel,
+    conversationId: string,
+    cursor?: string,
+    limit = 50,
+  ): Promise<{ data: any[]; nextCursor?: string }> {
+    const client = this.createClient(channel);
+    const params: Record<string, any> = {
+      fields: 'id,created_time,from,to,message,attachments,shares,story,reactions',
+      limit,
+    };
+    if (cursor) params.after = cursor;
+
+    try {
+      const { data } = await client.get(`/${conversationId}/messages`, { params });
+      return {
+        data: data?.data ?? [],
+        nextCursor: data?.paging?.cursors?.after && data?.paging?.next ? data.paging.cursors.after : undefined,
+      };
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'listConversationMessages');
+    }
+  }
+
+  async getUserProfile(channel: Channel, igUserId: string): Promise<any> {
     const client = this.createClient(channel);
     try {
-      const { data } = await client.get(`/${cfg.pageId}`, {
-        params: { fields: 'id,name,instagram_business_account' },
+      const { data } = await client.get(`/${igUserId}`, {
+        params: { fields: 'name,username,profile_pic' },
       });
       return data;
-    } catch (error: any) {
-      this.logger.error(`Instagram verify failed: ${error.message}`);
-      throw error;
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'getUserProfile');
+    }
+  }
+
+  async getMessageDetail(channel: Channel, messageId: string): Promise<any> {
+    const client = this.createClient(channel);
+    try {
+      const { data } = await client.get(`/${messageId}`, {
+        params: { fields: 'id,created_time,from,to,message,attachments,shares,story' },
+      });
+      return data;
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'getMessageDetail');
     }
   }
 
@@ -72,5 +146,18 @@ export class InstagramHttpClient {
       timeout: 60000,
     });
     return Buffer.from(response.data);
+  }
+
+  private wrapGraphError(err: any, context: string): Error {
+    const metaError = err?.response?.data?.error;
+    if (metaError) {
+      const code = metaError.code !== undefined ? `[#${metaError.code}] ` : '';
+      const subcode = metaError.error_subcode ? ` (subcode ${metaError.error_subcode})` : '';
+      const msg = metaError.message || 'Unknown Meta error';
+      this.logger.error(`Instagram ${context} failed: ${code}${msg}${subcode}`);
+      return new Error(`Meta Graph API: ${code}${msg}${subcode}`);
+    }
+    this.logger.error(`Instagram ${context} failed: ${err.message}`);
+    return err;
   }
 }

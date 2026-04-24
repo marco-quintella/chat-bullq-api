@@ -36,7 +36,15 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
     );
 
     return {
-      externalId: response?.key?.id || response?.id || '',
+      // Prefer `messageid` — the send response returns `id` as `<owner>:<msgid>`
+      // but webhook echoes only carry the bare `<msgid>` in `messageid`. Using
+      // the same shape on both sides keeps the unique (conversationId,externalId)
+      // matching so the echo merges into our placeholder instead of duplicating.
+      externalId:
+        response?.messageid ||
+        response?.key?.id ||
+        response?.id ||
+        '',
       providerResponse: response,
     };
   }

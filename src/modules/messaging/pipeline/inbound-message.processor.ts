@@ -6,13 +6,29 @@ import { IdempotencyService } from './idempotency.service';
 import { ContactResolverService } from './contact-resolver.service';
 import { ConversationResolverService } from './conversation-resolver.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
-import { NormalizedInboundMessage } from '../../channel-hub/ports/types';
-import { MessageDirection, MessageContentType as PrismaContentType, MessageStatus, ConversationStatus } from '@prisma/client';
+import { NormalizedInboundMessage, StatusUpdate } from '../../channel-hub/ports/types';
+import { InstagramContactEnricherService } from '../../channel-hub/adapters/instagram/instagram-contact-enricher.service';
+import { WebhookEventsService } from '../../channel-hub/webhook-events.service';
+import {
+  ChannelType,
+  MessageDirection,
+  MessageContentType as PrismaContentType,
+  MessageStatus,
+  ConversationStatus,
+} from '@prisma/client';
 
 interface InboundJobData {
   channelId: string;
   organizationId: string;
+  webhookEventId?: string;
   message: NormalizedInboundMessage;
+}
+
+interface StatusJobData {
+  channelId: string;
+  organizationId?: string;
+  webhookEventId?: string;
+  status: StatusUpdate;
 }
 
 @Processor('inbound-messages', { concurrency: 10 })
@@ -25,98 +41,220 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly contactResolver: ContactResolverService,
     private readonly conversationResolver: ConversationResolverService,
     private readonly realtimeGateway: RealtimeGateway,
+    private readonly instagramEnricher: InstagramContactEnricherService,
+    private readonly webhookEvents: WebhookEventsService,
     @InjectQueue('chatbot-processor') private readonly chatbotQueue: Queue,
   ) {
     super();
   }
 
-  async process(job: Job<InboundJobData>): Promise<any> {
-    const { channelId, organizationId, message } = job.data;
-
+  async process(job: Job<InboundJobData | StatusJobData>): Promise<any> {
     if (job.name === 'process-status') {
-      return this.processStatus(job.data as any);
+      return this.processStatus(job.data as StatusJobData);
     }
 
-    const isDuplicate = await this.idempotency.isDuplicate(
-      message.externalMessageId,
-      channelId,
-    );
-    if (isDuplicate) {
-      this.logger.debug(`Duplicate message skipped: ${message.externalMessageId}`);
-      return { skipped: true, reason: 'duplicate' };
-    }
+    const { channelId, organizationId, message, webhookEventId } =
+      job.data as InboundJobData;
 
-    const { contactId } = await this.contactResolver.resolve(
-      organizationId,
-      channelId,
-      message,
-    );
-
-    const { conversationId, status } = await this.conversationResolver.resolve(
-      organizationId,
-      channelId,
-      contactId,
-    );
-
-    const savedMessage = await this.prisma.message.create({
-      data: {
-        conversationId,
-        direction: MessageDirection.INBOUND,
-        type: message.type as unknown as PrismaContentType,
-        content: message.content as any,
-        externalId: message.externalMessageId,
-        status: MessageStatus.DELIVERED,
-        deliveredAt: new Date(),
-        metadata: { rawPayload: JSON.parse(JSON.stringify(message.rawPayload ?? null)) },
-      },
-    });
-
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
-      data: { lastMessageAt: new Date() },
-    });
-
-    await this.idempotency.markProcessed(message.externalMessageId, channelId);
-
-    this.realtimeGateway.emitToOrg(organizationId, 'message:new', {
-      message: savedMessage,
-      conversationId,
-      contactId,
-    });
-    this.realtimeGateway.emitToConversation(conversationId, 'message:new', {
-      message: savedMessage,
-    });
-
-    if (status === ConversationStatus.BOT || status === ConversationStatus.PENDING) {
-      const hasActiveBot = await this.checkActiveBotForChannel(channelId);
-      if (hasActiveBot) {
-        if (status === ConversationStatus.PENDING) {
-          await this.prisma.conversation.update({
-            where: { id: conversationId },
-            data: { status: ConversationStatus.BOT },
-          });
-        }
-        await this.chatbotQueue.add('process-bot', {
-          conversationId,
-          channelId,
-          contactExternalId: message.externalContactId,
-          organizationId,
-          messageText: (message.content as any)?.text || '',
-        });
-        this.logger.log(`Routed to chatbot: conv=${conversationId}`);
+    try {
+      // Atomic duplicate check: only the first worker proceeds.
+      const claimed = await this.idempotency.claimProcessing(
+        message.externalMessageId,
+        channelId,
+      );
+      if (!claimed) {
+        this.logger.debug(
+          `Duplicate message skipped (claim): ${message.externalMessageId}`,
+        );
+        if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
+        return { skipped: true, reason: 'duplicate_claim' };
       }
+
+      const { contactId, isNew: isNewContact } =
+        await this.contactResolver.resolve(organizationId, channelId, message);
+
+      if (isNewContact && message.channelType === ChannelType.INSTAGRAM) {
+        const channel = await this.prisma.channel.findUnique({
+          where: { id: channelId },
+        });
+        if (channel) {
+          this.instagramEnricher
+            .enrich(channel, message.externalContactId)
+            .catch((err) =>
+              this.logger.warn(`IG enrichment failed: ${err.message}`),
+            );
+        }
+      }
+
+      const { conversationId, status } = await this.conversationResolver.resolve(
+        organizationId,
+        channelId,
+        contactId,
+        message.isGroup,
+      );
+
+      const isEcho = !!message.isEcho;
+      const direction = isEcho
+        ? MessageDirection.OUTBOUND
+        : MessageDirection.INBOUND;
+
+      const savedMessage = await this.upsertMessage(
+        conversationId,
+        message,
+        direction,
+        isEcho,
+      );
+
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { lastMessageAt: new Date() },
+      });
+
+      this.realtimeGateway.emitToOrg(organizationId, 'message:new', {
+        message: savedMessage,
+        conversationId,
+        contactId,
+      });
+      this.realtimeGateway.emitToConversation(conversationId, 'message:new', {
+        message: savedMessage,
+      });
+
+      if (
+        !isEcho &&
+        (status === ConversationStatus.BOT ||
+          status === ConversationStatus.PENDING)
+      ) {
+        const hasActiveBot = await this.checkActiveBotForChannel(channelId);
+        if (hasActiveBot) {
+          if (status === ConversationStatus.PENDING) {
+            await this.prisma.conversation.update({
+              where: { id: conversationId },
+              data: { status: ConversationStatus.BOT },
+            });
+          }
+          await this.chatbotQueue.add(
+            'process-bot',
+            {
+              conversationId,
+              channelId,
+              contactExternalId: message.externalContactId,
+              organizationId,
+              messageText: (message.content as any)?.text || '',
+            },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2000 },
+              removeOnComplete: true,
+              removeOnFail: false,
+            },
+          );
+          this.logger.log(`Routed to chatbot: conv=${conversationId}`);
+        }
+      }
+
+      this.logger.log(
+        `Inbound processed: msg=${savedMessage.id} conv=${conversationId} contact=${contactId} type=${message.type} echo=${isEcho}`,
+      );
+      if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
+
+      return {
+        messageId: savedMessage.id,
+        conversationId,
+        contactId,
+        conversationStatus: status,
+      };
+    } catch (err: any) {
+      this.logger.error(
+        `Inbound failed (channel=${channelId} ext=${message.externalMessageId}): ${err.message}`,
+        err.stack,
+      );
+      if (webhookEventId) {
+        await this.webhookEvents.markFailed(webhookEventId, err.message);
+      }
+      // Release the claim so retries can try again — next attempt re-acquires.
+      await this.idempotency
+        .markProcessed(message.externalMessageId, channelId)
+        .catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /**
+   * Persists an inbound message OR merges into an existing row created by the
+   * outbound path (which wrote the row with externalId BEFORE we saw the echo).
+   *
+   * We rely on the `(conversationId, externalId)` unique constraint.
+   */
+  private async upsertMessage(
+    conversationId: string,
+    message: NormalizedInboundMessage,
+    direction: MessageDirection,
+    isEcho: boolean,
+  ) {
+    const existing = message.externalMessageId
+      ? await this.prisma.message.findUnique({
+          where: {
+            uq_msg_conv_external: {
+              conversationId,
+              externalId: message.externalMessageId,
+            },
+          },
+        })
+      : null;
+
+    if (existing) {
+      // Already persisted (either by outbound processor or a previous webhook).
+      // Merge non-destructively: upgrade status, fill sentAt/deliveredAt.
+      const patch: Record<string, any> = {};
+      if (!existing.sentAt && isEcho) patch.sentAt = new Date();
+      if (!existing.deliveredAt && !isEcho) patch.deliveredAt = new Date();
+      if (isEcho && existing.status === MessageStatus.QUEUED) {
+        patch.status = MessageStatus.SENT;
+      }
+      if (!isEcho && existing.status === MessageStatus.QUEUED) {
+        patch.status = MessageStatus.DELIVERED;
+      }
+      if (Object.keys(patch).length === 0) return existing;
+      return this.prisma.message.update({
+        where: { id: existing.id },
+        data: patch,
+      });
     }
 
-    this.logger.log(
-      `Inbound processed: msg=${savedMessage.id} conv=${conversationId} contact=${contactId} type=${message.type}`,
-    );
-
-    return {
-      messageId: savedMessage.id,
-      conversationId,
-      contactId,
-      conversationStatus: status,
-    };
+    try {
+      return await this.prisma.message.create({
+        data: {
+          conversationId,
+          direction,
+          type: message.type as unknown as PrismaContentType,
+          content: message.content as any,
+          externalId: message.externalMessageId || null,
+          status: isEcho ? MessageStatus.SENT : MessageStatus.DELIVERED,
+          senderName: message.senderName || null,
+          sentAt: isEcho ? new Date() : null,
+          deliveredAt: isEcho ? null : new Date(),
+          metadata: {
+            rawPayload: safeJson(message.rawPayload),
+            isEcho,
+            replyTo: message.replyTo ? safeJson(message.replyTo) : null,
+          },
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        // Lost a race — re-read and return.
+        const racer = await this.prisma.message.findUnique({
+          where: {
+            uq_msg_conv_external: {
+              conversationId,
+              externalId: message.externalMessageId,
+            },
+          },
+        });
+        if (racer) return racer;
+      }
+      throw err;
+    }
   }
 
   private async checkActiveBotForChannel(channelId: string): Promise<boolean> {
@@ -129,8 +267,8 @@ export class InboundMessageProcessor extends WorkerHost {
     return !!link;
   }
 
-  private async processStatus(data: any): Promise<any> {
-    const { status } = data;
+  private async processStatus(data: StatusJobData): Promise<any> {
+    const { status, channelId, webhookEventId } = data;
     if (!status?.externalMessageId) return;
 
     const statusMap: Record<string, MessageStatus> = {
@@ -139,27 +277,118 @@ export class InboundMessageProcessor extends WorkerHost {
       read: MessageStatus.READ,
       failed: MessageStatus.FAILED,
     };
-
     const dbStatus = statusMap[status.status];
     if (!dbStatus) return;
+
+    // Special case: Instagram read events arrive with a watermark, not a mid.
+    if (status.externalMessageId.startsWith('ig-read-watermark:')) {
+      return this.processInstagramReadWatermark(channelId, status, webhookEventId);
+    }
 
     const message = await this.prisma.message.findFirst({
       where: { externalId: status.externalMessageId },
     });
-
     if (!message) return;
 
-    const updateData: Record<string, any> = { status: dbStatus };
-    if (dbStatus === MessageStatus.SENT) updateData.sentAt = status.timestamp;
-    if (dbStatus === MessageStatus.DELIVERED) updateData.deliveredAt = status.timestamp;
-    if (dbStatus === MessageStatus.READ) updateData.readAt = status.timestamp;
-    if (dbStatus === MessageStatus.FAILED) updateData.failedReason = status.errorMessage;
+    const updateData: Record<string, any> = {
+      status: this.maxStatus(message.status, dbStatus),
+    };
+    if (dbStatus === MessageStatus.SENT && !message.sentAt) {
+      updateData.sentAt = status.timestamp;
+    }
+    if (dbStatus === MessageStatus.DELIVERED && !message.deliveredAt) {
+      updateData.deliveredAt = status.timestamp;
+    }
+    if (dbStatus === MessageStatus.READ && !message.readAt) {
+      updateData.readAt = status.timestamp;
+    }
+    if (dbStatus === MessageStatus.FAILED) {
+      updateData.failedReason = status.errorMessage;
+    }
 
-    await this.prisma.message.update({
+    const updated = await this.prisma.message.update({
       where: { id: message.id },
       data: updateData,
     });
 
-    return { updated: message.id, status: dbStatus };
+    const payload = {
+      messageId: message.id,
+      status: updated.status,
+      conversationId: message.conversationId,
+    };
+    this.realtimeGateway.emitToConversation(
+      message.conversationId,
+      'message:status',
+      payload,
+    );
+
+    if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
+
+    return { updated: message.id, status: updated.status };
+  }
+
+  /**
+   * Mark every outbound message in channel's conversations as READ when their
+   * `sentAt <= watermark`. Keeps the timeline consistent with what Meta shows.
+   */
+  private async processInstagramReadWatermark(
+    channelId: string,
+    status: StatusUpdate,
+    webhookEventId?: string,
+  ): Promise<any> {
+    const watermark = status.timestamp;
+    const candidates = await this.prisma.message.findMany({
+      where: {
+        direction: MessageDirection.OUTBOUND,
+        status: { in: [MessageStatus.SENT, MessageStatus.DELIVERED] },
+        sentAt: { lte: watermark },
+        conversation: { channelId },
+      },
+      select: { id: true, conversationId: true },
+      take: 500,
+    });
+    if (candidates.length === 0) return;
+
+    await this.prisma.message.updateMany({
+      where: { id: { in: candidates.map((c) => c.id) } },
+      data: { status: MessageStatus.READ, readAt: watermark },
+    });
+
+    const byConv = new Map<string, string[]>();
+    for (const c of candidates) {
+      if (!byConv.has(c.conversationId)) byConv.set(c.conversationId, []);
+      byConv.get(c.conversationId)!.push(c.id);
+    }
+    for (const [conversationId, messageIds] of byConv) {
+      this.realtimeGateway.emitToConversation(conversationId, 'message:status', {
+        messageIds,
+        status: MessageStatus.READ,
+        conversationId,
+      });
+    }
+
+    if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
+    return { updated: candidates.length, status: MessageStatus.READ };
+  }
+
+  private maxStatus(current: MessageStatus, next: MessageStatus): MessageStatus {
+    // Never regress status: QUEUED → SENT → DELIVERED → READ. FAILED wins unless already READ.
+    const order: Record<MessageStatus, number> = {
+      [MessageStatus.QUEUED]: 0,
+      [MessageStatus.SENT]: 1,
+      [MessageStatus.DELIVERED]: 2,
+      [MessageStatus.READ]: 3,
+      [MessageStatus.FAILED]: 4,
+    };
+    if (current === MessageStatus.READ && next !== MessageStatus.READ) return current;
+    return order[next] >= order[current] ? next : current;
+  }
+}
+
+function safeJson(value: unknown): any {
+  try {
+    return JSON.parse(JSON.stringify(value ?? null));
+  } catch {
+    return null;
   }
 }

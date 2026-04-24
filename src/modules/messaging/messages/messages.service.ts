@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import {
@@ -9,12 +13,14 @@ import {
 import { MessagesRepository } from './messages.repository';
 import { SendMessageDto } from './dto/send-message.dto';
 import { PrismaService } from '../../../database/prisma.service';
+import { RealtimeGateway } from '../../realtime/realtime.gateway';
 
 @Injectable()
 export class MessagesService {
   constructor(
     private readonly repository: MessagesRepository,
     private readonly prisma: PrismaService,
+    private readonly realtimeGateway: RealtimeGateway,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -53,16 +59,50 @@ export class MessagesService {
       data: { lastMessageAt: new Date() },
     });
 
-    await this.outboundQueue.add('send-outbound', {
-      messageId: message.id,
-      channelId: conversation.channelId,
-      contactExternalId: contactChannel.externalId,
-      message: {
-        type: dto.type,
-        content: dto.content,
-        replyTo: dto.replyTo,
-      },
+    // Optimistic realtime: everyone in the org/conversation sees the outbound
+    // QUEUED row instantly, independent of the outbound worker roundtrip.
+    this.realtimeGateway.emitToOrg(organizationId, 'message:new', {
+      message,
+      conversationId: conversation.id,
+      contactId: conversation.contactId,
     });
+    this.realtimeGateway.emitToConversation(conversation.id, 'message:new', {
+      message,
+    });
+
+    let outboundContent = dto.content;
+    if (conversation.isGroup && dto.type === 'TEXT' && outboundContent.text) {
+      const sender = await this.prisma.user.findUnique({
+        where: { id: senderId },
+        select: { name: true },
+      });
+      if (sender?.name) {
+        outboundContent = {
+          ...outboundContent,
+          text: `*${sender.name}*\n${outboundContent.text}`,
+        };
+      }
+    }
+
+    await this.outboundQueue.add(
+      'send-outbound',
+      {
+        messageId: message.id,
+        channelId: conversation.channelId,
+        contactExternalId: contactChannel.externalId,
+        message: {
+          type: dto.type,
+          content: outboundContent,
+          replyTo: dto.replyTo,
+        },
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
 
     return message;
   }

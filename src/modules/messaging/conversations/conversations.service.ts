@@ -1,15 +1,31 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { ConversationStatus } from '@prisma/client';
+import { Conversation, ConversationStatus } from '@prisma/client';
 import { ConversationsRepository, InboxFilters } from './conversations.repository';
 import { ConversationFsmService } from './conversation-fsm.service';
 import { UpdateConversationDto } from './dto/update-conversation.dto';
+import { RealtimeGateway } from '../../realtime/realtime.gateway';
 
 @Injectable()
 export class ConversationsService {
   constructor(
     private readonly repository: ConversationsRepository,
     private readonly fsm: ConversationFsmService,
+    private readonly realtimeGateway: RealtimeGateway,
   ) {}
+
+  private broadcastUpdate(conversation: Conversation | null): void {
+    if (!conversation) return;
+    this.realtimeGateway.emitToOrg(
+      conversation.organizationId,
+      'conversation:updated',
+      { conversation },
+    );
+    this.realtimeGateway.emitToConversation(
+      conversation.id,
+      'conversation:updated',
+      { conversation },
+    );
+  }
 
   async findInbox(
     organizationId: string,
@@ -78,13 +94,17 @@ export class ConversationsService {
       await this.repository.update(id, { department: { connect: { id: dto.departmentId } } });
     }
 
-    return this.repository.findById(id);
+    const updated = await this.repository.findById(id);
+    this.broadcastUpdate(updated as Conversation | null);
+    return updated;
   }
 
   async close(id: string, organizationId: string, actorId: string) {
     await this.findOne(id, organizationId);
     await this.fsm.transition(id, ConversationStatus.CLOSED, actorId);
-    return this.repository.findById(id);
+    const updated = await this.repository.findById(id);
+    this.broadcastUpdate(updated as Conversation | null);
+    return updated;
   }
 
   async reopen(id: string, organizationId: string, actorId: string) {
@@ -93,13 +113,17 @@ export class ConversationsService {
       ? ConversationStatus.OPEN
       : ConversationStatus.PENDING;
     await this.fsm.transition(id, target, actorId);
-    return this.repository.findById(id);
+    const updated = await this.repository.findById(id);
+    this.broadcastUpdate(updated as Conversation | null);
+    return updated;
   }
 
   async assignToMe(id: string, organizationId: string, userId: string) {
     await this.findOne(id, organizationId);
     await this.fsm.assign(id, userId, userId);
-    return this.repository.findById(id);
+    const updated = await this.repository.findById(id);
+    this.broadcastUpdate(updated as Conversation | null);
+    return updated;
   }
 
   async getStatusCounts(organizationId: string) {

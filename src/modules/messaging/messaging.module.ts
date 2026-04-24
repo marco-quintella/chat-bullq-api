@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ChannelHubModule } from '../channel-hub/channel-hub.module';
 import { IdempotencyService } from './pipeline/idempotency.service';
 import { ContactResolverService } from './pipeline/contact-resolver.service';
 import { ConversationResolverService } from './pipeline/conversation-resolver.service';
+import { HistoryImportService } from './pipeline/history-import.service';
 import { InboundMessageProcessor } from './pipeline/inbound-message.processor';
 import { OutboundMessageProcessor } from './pipeline/outbound-message.processor';
 import { ConversationFsmService } from './conversations/conversation-fsm.service';
@@ -13,6 +14,8 @@ import { ConversationsRepository } from './conversations/conversations.repositor
 import { MessagesController } from './messages/messages.controller';
 import { MessagesService } from './messages/messages.service';
 import { MessagesRepository } from './messages/messages.repository';
+import { TranscriptionService } from './messages/transcription.service';
+import { UploadsService } from './messages/uploads.service';
 import { ContactsController } from './contacts/contacts.controller';
 import { ContactsService } from './contacts/contacts.service';
 import { ContactsRepository } from './contacts/contacts.repository';
@@ -24,13 +27,14 @@ import { ContactsRepository } from './contacts/contacts.repository';
       { name: 'outbound-messages' },
       { name: 'chatbot-processor' },
     ),
-    ChannelHubModule,
+    forwardRef(() => ChannelHubModule),
   ],
   controllers: [ConversationsController, MessagesController, ContactsController],
   providers: [
     IdempotencyService,
     ContactResolverService,
     ConversationResolverService,
+    HistoryImportService,
     InboundMessageProcessor,
     OutboundMessageProcessor,
     ConversationFsmService,
@@ -38,9 +42,11 @@ import { ContactsRepository } from './contacts/contacts.repository';
     ConversationsRepository,
     MessagesService,
     MessagesRepository,
+    TranscriptionService,
+    UploadsService,
     ContactsService,
     ContactsRepository,
   ],
-  exports: [ConversationsService, MessagesService, ConversationFsmService, ContactsService],
+  exports: [ConversationsService, MessagesService, ConversationFsmService, ContactsService, HistoryImportService],
 })
 export class MessagingModule {}

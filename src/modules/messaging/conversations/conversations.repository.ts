@@ -39,7 +39,13 @@ export class ConversationsRepository {
         where,
         include: {
           contact: {
-            select: { id: true, name: true, phone: true, avatarUrl: true },
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              avatarUrl: true,
+              tags: { include: { tag: true } },
+            },
           },
           channel: {
             select: { id: true, type: true, name: true },
@@ -58,6 +64,7 @@ export class ConversationsRepository {
               createdAt: true,
             },
           },
+          tags: { include: { tag: true } },
           _count: { select: { messages: true } },
         },
         orderBy: { lastMessageAt: { sort: 'desc', nulls: 'last' } },

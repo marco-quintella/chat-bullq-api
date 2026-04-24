@@ -21,6 +21,9 @@ export class MessagesRepository {
         orderBy: { createdAt: 'desc' },
         skip,
         take,
+        include: {
+          sender: { select: { id: true, name: true, avatarUrl: true } },
+        },
       }),
       this.prisma.message.count({ where: { conversationId } }),
     ]);

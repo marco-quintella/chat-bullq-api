@@ -3,6 +3,7 @@ import { ZappfyInboundAdapter } from './zappfy.inbound-adapter';
 import { ZappfyOutboundAdapter } from './zappfy.outbound-adapter';
 import { ZappfyMessageMapper } from './zappfy.message-mapper';
 import { ZappfyHttpClient } from './zappfy.http-client';
+import { ZappfySyncAdapter } from './zappfy.sync-adapter';
 
 @Module({
   providers: [
@@ -10,7 +11,13 @@ import { ZappfyHttpClient } from './zappfy.http-client';
     ZappfyOutboundAdapter,
     ZappfyMessageMapper,
     ZappfyHttpClient,
+    ZappfySyncAdapter,
   ],
-  exports: [ZappfyInboundAdapter, ZappfyOutboundAdapter, ZappfyHttpClient],
+  exports: [
+    ZappfyInboundAdapter,
+    ZappfyOutboundAdapter,
+    ZappfyHttpClient,
+    ZappfySyncAdapter,
+  ],
 })
 export class ZappfyModule {}

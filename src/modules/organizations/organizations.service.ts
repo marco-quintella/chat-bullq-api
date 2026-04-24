@@ -34,19 +34,62 @@ export class OrganizationsService {
   }
 
   async inviteMember(orgId: string, dto: InviteMemberDto, inviterId: string) {
-    const user = await this.repository.findUserByEmail(dto.email);
-    if (!user) {
-      throw new NotFoundException('User with this email not found. They must register first.');
+    // Check if user already exists and is already a member
+    const existingUser = await this.repository.findUserByEmail(dto.email);
+    if (existingUser) {
+      const existingMembership = await this.repository.findMembership(existingUser.id, orgId);
+      if (existingMembership) {
+        throw new ConflictException('User is already a member of this organization');
+      }
     }
 
-    const existing = await this.repository.findMembership(user.id, orgId);
-    if (existing) {
-      throw new ConflictException('User is already a member of this organization');
+    // Create invitation (works for both existing and non-existing users)
+    const invitation = await this.repository.createInvitation(orgId, dto.email, dto.role, inviterId);
+    this.logger.log(`Invitation sent to ${dto.email} for org ${orgId} by ${inviterId}`);
+
+    // If user already exists, auto-accept: add them to org immediately
+    if (existingUser) {
+      await this.repository.addMember(orgId, existingUser.id, dto.role);
+      await this.repository.acceptInvitation(invitation.id);
+      this.logger.log(`User ${dto.email} auto-added to org ${orgId} (already registered)`);
+      return { ...invitation, status: 'ACCEPTED' as const, autoAccepted: true };
     }
 
-    const membership = await this.repository.addMember(orgId, user.id, dto.role);
-    this.logger.log(`User ${user.email} invited to org ${orgId} by ${inviterId}`);
-    return membership;
+    return { ...invitation, autoAccepted: false };
+  }
+
+  async validateInvitation(token: string) {
+    const invitation = await this.repository.findInvitationByToken(token);
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
+    }
+    if (invitation.status !== 'PENDING') {
+      throw new BadRequestException(`Invitation has already been ${invitation.status.toLowerCase()}`);
+    }
+    if (invitation.expiresAt < new Date()) {
+      throw new BadRequestException('Invitation has expired');
+    }
+    return {
+      email: invitation.email,
+      role: invitation.role,
+      organization: invitation.organization,
+    };
+  }
+
+  async getInvitations(orgId: string) {
+    return this.repository.findInvitationsByOrg(orgId);
+  }
+
+  async revokeInvitation(orgId: string, invitationId: string) {
+    const invitations = await this.repository.findInvitationsByOrg(orgId);
+    const invitation = invitations.find((i) => i.id === invitationId);
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found in this organization');
+    }
+    if (invitation.status !== 'PENDING') {
+      throw new BadRequestException('Only pending invitations can be revoked');
+    }
+    return this.repository.revokeInvitation(invitationId);
   }
 
   async updateMemberRole(orgId: string, memberId: string, dto: UpdateMemberRoleDto, actorRole: OrgRole) {

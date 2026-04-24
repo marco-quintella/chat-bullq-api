@@ -1,5 +1,5 @@
-import { IsEmail, IsString, MinLength, MaxLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsString, MinLength, MaxLength, IsOptional } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RegisterDto {
   @ApiProperty({ example: 'João Silva' })
@@ -17,4 +17,9 @@ export class RegisterDto {
   @MinLength(6)
   @MaxLength(128)
   password: string;
+
+  @ApiPropertyOptional({ description: 'Invitation token to join an existing organization' })
+  @IsOptional()
+  @IsString()
+  inviteToken?: string;
 }

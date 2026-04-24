@@ -12,8 +12,8 @@ export class CreateChannelDto {
   name: string;
 
   @ApiProperty({
-    description: 'Provider credentials (token, instanceKey, etc)',
-    example: { baseUrl: 'https://api.uazapi.com', instanceKey: 'my-instance', token: 'my-token' },
+    description: 'Provider credentials (token for Zappfy, accessToken/phoneNumberId for WhatsApp Official)',
+    example: { token: 'zappfy-instance-token' },
   })
   @IsObject()
   config: Record<string, any>;

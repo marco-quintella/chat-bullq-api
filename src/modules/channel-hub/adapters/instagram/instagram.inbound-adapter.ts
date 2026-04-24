@@ -1,7 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ChannelType } from '@prisma/client';
+import { Channel, ChannelType } from '@prisma/client';
 import * as crypto from 'crypto';
-import { InboundChannelPort } from '../../ports/inbound-channel.port';
+import {
+  InboundChannelPort,
+  ChannelLocator,
+} from '../../ports/inbound-channel.port';
 import { WebhookParseResult, VerificationResponse } from '../../ports/types';
 import { InstagramMessageMapper } from './instagram.message-mapper';
 
@@ -12,26 +15,57 @@ export class InstagramInboundAdapter implements InboundChannelPort {
 
   constructor(private readonly mapper: InstagramMessageMapper) {}
 
+  extractLocators(payload: unknown): ChannelLocator[] {
+    const body = (payload ?? {}) as Record<string, any>;
+    const entries: any[] = body?.entry || [];
+    const seen = new Set<string>();
+    const locators: ChannelLocator[] = [];
+    for (const entry of entries) {
+      const id = entry?.id ? String(entry.id) : undefined;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      locators.push({ igBusinessId: id });
+    }
+    return locators;
+  }
+
+  matchesChannel(channel: Channel, locator: ChannelLocator): boolean {
+    const config = (channel.config ?? {}) as Record<string, any>;
+    const candidates = [
+      config.igBusinessId,
+      config.igUserId,
+      config.pageId,
+    ].filter(Boolean) as string[];
+    if (!locator.igBusinessId || candidates.length === 0) return false;
+    return candidates.some((c) => String(c) === locator.igBusinessId);
+  }
+
   validateWebhook(
     headers: Record<string, string>,
     rawBody: Buffer,
-    webhookSecret?: string,
+    _webhookSecret?: string,
+    channel?: Channel,
   ): boolean {
-    if (!webhookSecret) return true;
+    const appSecret = (channel?.config as Record<string, any> | undefined)?.appSecret;
+    if (!appSecret) return true;
 
     const signature = headers['x-hub-signature-256'];
     if (!signature) return false;
 
     const expected = 'sha256=' +
-      crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+      crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
 
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected),
-    );
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expected),
+      );
+    } catch {
+      return false;
+    }
   }
 
-  parseWebhook(payload: unknown): WebhookParseResult {
+  parseWebhook(payload: unknown, channel?: Channel): WebhookParseResult {
     const result: WebhookParseResult = {
       messages: [],
       statuses: [],
@@ -41,8 +75,22 @@ export class InstagramInboundAdapter implements InboundChannelPort {
     try {
       const body = payload as Record<string, any>;
       const entries = body?.entry || [];
+      const cfg = (channel?.config as any) || {};
+      const expectedId = cfg.igBusinessId
+        ? String(cfg.igBusinessId)
+        : cfg.igUserId
+          ? String(cfg.igUserId)
+          : undefined;
 
       for (const entry of entries) {
+        // Strict scoping: drop entries for a different IG business account
+        if (
+          expectedId &&
+          entry?.id &&
+          String(entry.id) !== expectedId
+        ) {
+          continue;
+        }
         const messagingEvents = entry?.messaging || [];
         for (const event of messagingEvents) {
           if (event.message) {
@@ -53,6 +101,12 @@ export class InstagramInboundAdapter implements InboundChannelPort {
           }
           if (event.delivery) {
             const status = this.mapper.normalizeStatus(event);
+            if (status) {
+              result.statuses.push(status);
+            }
+          }
+          if (event.read) {
+            const status = this.mapper.normalizeReadStatus(event);
             if (status) {
               result.statuses.push(status);
             }

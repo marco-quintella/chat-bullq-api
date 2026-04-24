@@ -2,12 +2,14 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ChannelType } from '@prisma/client';
 import { InboundChannelPort } from './ports/inbound-channel.port';
 import { OutboundChannelPort } from './ports/outbound-channel.port';
+import { HistorySyncPort } from './ports/history-sync.port';
 
 @Injectable()
 export class ChannelAdapterRegistry {
   private readonly logger = new Logger(ChannelAdapterRegistry.name);
   private inboundAdapters = new Map<ChannelType, InboundChannelPort>();
   private outboundAdapters = new Map<ChannelType, OutboundChannelPort>();
+  private historySyncAdapters = new Map<ChannelType, HistorySyncPort>();
 
   register(
     inbound: InboundChannelPort,
@@ -17,6 +19,11 @@ export class ChannelAdapterRegistry {
     this.inboundAdapters.set(type, inbound);
     this.outboundAdapters.set(type, outbound);
     this.logger.log(`Adapter registered: ${type}`);
+  }
+
+  registerHistorySync(adapter: HistorySyncPort): void {
+    this.historySyncAdapters.set(adapter.channelType, adapter);
+    this.logger.log(`HistorySync adapter registered: ${adapter.channelType}`);
   }
 
   getInbound(type: ChannelType): InboundChannelPort {
@@ -33,6 +40,14 @@ export class ChannelAdapterRegistry {
       throw new NotFoundException(`No outbound adapter for channel type: ${type}`);
     }
     return adapter;
+  }
+
+  getHistorySync(type: ChannelType): HistorySyncPort | null {
+    return this.historySyncAdapters.get(type) ?? null;
+  }
+
+  hasHistorySync(type: ChannelType): boolean {
+    return this.historySyncAdapters.has(type);
   }
 
   hasAdapter(type: ChannelType): boolean {

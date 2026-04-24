@@ -36,3 +36,6 @@ coverage/
 # Temp
 tmp/
 temp/
+
+# Local file storage
+uploads/

@@ -45,6 +45,28 @@ export class TagsController {
     return this.service.removeFromConversation(convId, tagId, orgId);
   }
 
+  @Post('contact/:contactId/tag/:tagId')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Attach tag to contact' })
+  addToContact(
+    @Param('contactId') contactId: string,
+    @Param('tagId') tagId: string,
+    @CurrentOrg('id') orgId: string,
+  ) {
+    return this.service.addToContact(contactId, tagId, orgId);
+  }
+
+  @Delete('contact/:contactId/tag/:tagId')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Remove tag from contact' })
+  removeFromContact(
+    @Param('contactId') contactId: string,
+    @Param('tagId') tagId: string,
+    @CurrentOrg('id') orgId: string,
+  ) {
+    return this.service.removeFromContact(contactId, tagId, orgId);
+  }
+
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({ summary: 'Create tag' })

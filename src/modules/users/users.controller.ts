@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Patch,
   Post,
   Body,
@@ -11,8 +12,9 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
-import { JwtAuthGuard } from '../../common/guards';
-import { CurrentUser } from '../../common/decorators';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { JwtAuthGuard, OrgGuard } from '../../common/guards';
+import { CurrentUser, CurrentOrg } from '../../common/decorators';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -38,5 +40,28 @@ export class UsersController {
     @Body() dto: ChangePasswordDto,
   ) {
     return this.service.changePassword(userId, dto);
+  }
+
+  @Get('me/preferences')
+  @UseGuards(OrgGuard)
+  @ApiOperation({ summary: 'Get current user preferences (per organization)' })
+  getPreferences(
+    @CurrentUser('id') userId: string,
+    @CurrentOrg('id') orgId: string,
+  ) {
+    return this.service.getPreferences(userId, orgId);
+  }
+
+  @Patch('me/preferences')
+  @UseGuards(OrgGuard)
+  @ApiOperation({
+    summary: 'Shallow-merge patch into current user preferences (per organization)',
+  })
+  updatePreferences(
+    @CurrentUser('id') userId: string,
+    @CurrentOrg('id') orgId: string,
+    @Body() dto: UpdatePreferencesDto,
+  ) {
+    return this.service.updatePreferences(userId, orgId, dto.preferences);
   }
 }

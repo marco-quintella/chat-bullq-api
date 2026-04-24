@@ -6,8 +6,8 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
-  ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
@@ -16,7 +16,7 @@ import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
-import { CurrentUser, CurrentOrg, Roles } from '../../common/decorators';
+import { CurrentUser, CurrentOrg, Roles, Public } from '../../common/decorators';
 
 @ApiTags('Organizations')
 @ApiBearerAuth()
@@ -53,6 +53,30 @@ export class OrganizationsController {
     @CurrentUser('id') userId: string,
   ) {
     return this.service.inviteMember(orgId, dto, userId);
+  }
+
+  @Get('invitations')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'List invitations for current organization' })
+  getInvitations(@CurrentOrg('id') orgId: string) {
+    return this.service.getInvitations(orgId);
+  }
+
+  @Delete('invitations/:invitationId')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Revoke a pending invitation' })
+  revokeInvitation(
+    @CurrentOrg('id') orgId: string,
+    @Param('invitationId') invitationId: string,
+  ) {
+    return this.service.revokeInvitation(orgId, invitationId);
+  }
+
+  @Get('invitations/validate')
+  @Public()
+  @ApiOperation({ summary: 'Validate an invitation token (public)' })
+  validateInvitation(@Query('token') token: string) {
+    return this.service.validateInvitation(token);
   }
 
   @Patch('members/:memberId/role')

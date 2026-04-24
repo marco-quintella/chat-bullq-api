@@ -39,10 +39,22 @@ export class ChannelsRepository {
     return this.prisma.channel.update({ where: { id }, data });
   }
 
+  /**
+   * Soft-delete a channel. Preserves history (messages + conversations) by
+   * flagging the channel and its conversations as deleted; subsequent queries
+   * filter on `deletedAt IS NULL`. Hard-deleting was the previous behaviour
+   * and caused irreversible data loss on any accidental click.
+   */
   async softDelete(id: string) {
-    return this.prisma.channel.update({
-      where: { id },
-      data: { deletedAt: new Date(), isActive: false },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.conversation.updateMany({
+        where: { channelId: id, deletedAt: null },
+        data: { deletedAt: new Date() },
+      });
+      return tx.channel.update({
+        where: { id },
+        data: { deletedAt: new Date(), isActive: false },
+      });
     });
   }
 }

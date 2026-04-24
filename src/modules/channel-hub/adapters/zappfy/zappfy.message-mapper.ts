@@ -10,45 +10,59 @@ import {
 @Injectable()
 export class ZappfyMessageMapper {
   normalizeInbound(event: any): NormalizedInboundMessage | null {
-    const msg = event?.data;
+    const msg = event?.message;
     if (!msg) return null;
 
-    const isFromMe = msg.key?.fromMe === true;
-    if (isFromMe) return null;
-
-    const remoteJid = msg.key?.remoteJid || '';
-    const phone = remoteJid.replace(/@s\.whatsapp\.net|@g\.us/g, '');
-    const pushName = msg.pushName || msg.key?.pushName || undefined;
+    const chatid = msg.chatid || '';
+    const isGroup = chatid.endsWith('@g.us');
+    const phone = chatid.replace(/@s\.whatsapp\.net|@g\.us/g, '');
+    const isEcho = msg.fromMe === true;
 
     const result: NormalizedInboundMessage = {
-      externalMessageId: msg.key?.id || msg.id || '',
-      externalContactId: remoteJid,
-      contactName: pushName,
-      contactPhone: phone,
+      externalMessageId: msg.messageid || msg.id || '',
+      externalContactId: chatid,
+      contactName: isGroup ? (event?.chat?.name || msg.chatName) : (msg.senderName || event?.chat?.name),
+      contactPhone: isGroup ? undefined : phone,
       channelType: ChannelType.WHATSAPP_ZAPPFY,
-      timestamp: new Date(
-        (msg.messageTimestamp || Math.floor(Date.now() / 1000)) * 1000,
-      ),
-      type: this.resolveContentType(msg.message || msg),
-      content: this.extractContent(msg.message || msg),
-      isForwarded: !!msg.message?.contextInfo?.isForwarded,
+      timestamp: new Date(msg.messageTimestamp || Date.now()),
+      type: this.resolveContentType(msg),
+      content: this.extractContent(msg),
+      isForwarded: typeof msg.content === 'object' && !!msg.content?.contextInfo?.isForwarded,
+      isGroup,
+      isEcho,
+      senderName: isGroup
+        ? (msg.senderName?.trim() || msg.pushName?.trim() || msg.sender_pn?.replace(/@.+/, '') || undefined)
+        : (isEcho ? (msg.senderName?.trim() || msg.pushName?.trim() || undefined) : undefined),
       rawPayload: event,
     };
 
-    if (msg.message?.contextInfo?.stanzaId) {
+    if (typeof msg.content === 'object' && msg.content?.contextInfo?.stanzaId) {
       result.replyTo = {
-        externalMessageId: msg.message.contextInfo.stanzaId,
+        externalMessageId: msg.content.contextInfo.stanzaId,
       };
     }
 
     return result;
   }
 
+  /**
+   * Uazapi/Zappfy send status updates in at least two shapes:
+   *  A) { state: 'delivered', event: { MessageIDs: [...], Timestamp, Type } }
+   *  B) { event: 'messages.update', message: { messageid, status: 'READ' | ack:3, timestamp } }
+   *  C) { messages: [{ id, ack: 3 }] }  (baileys-style numeric ack)
+   *
+   * We accept all of them and convert to our StatusUpdate.
+   */
   normalizeStatus(event: any): StatusUpdate | null {
-    const data = event?.data;
-    if (!data?.key?.id) return null;
+    if (!event) return null;
 
-    const statusMap: Record<number, StatusUpdate['status']> = {
+    const tsToDate = (ts: any): Date => {
+      const num = typeof ts === 'string' ? parseInt(ts, 10) : Number(ts);
+      if (!num || isNaN(num)) return new Date();
+      return new Date(num > 9999999999 ? num : num * 1000);
+    };
+
+    const numericAckMap: Record<number, StatusUpdate['status']> = {
       1: 'sent',
       2: 'delivered',
       3: 'read',
@@ -56,14 +70,66 @@ export class ZappfyMessageMapper {
       5: 'failed',
     };
 
-    const status = statusMap[data.status];
-    if (!status) return null;
-
-    return {
-      externalMessageId: data.key.id,
-      status,
-      timestamp: new Date(),
+    const stringStatusMap: Record<string, StatusUpdate['status']> = {
+      sent: 'sent',
+      delivered: 'delivered',
+      read: 'read',
+      played: 'read',
+      failed: 'failed',
+      error: 'failed',
+      pending: 'sent',
     };
+
+    // Shape A
+    const statusEvent = event?.event;
+    if (statusEvent && Array.isArray(statusEvent.MessageIDs) && statusEvent.MessageIDs.length > 0) {
+      const stateStr = String(event?.state || statusEvent?.Type || '').toLowerCase();
+      const status = stringStatusMap[stateStr];
+      if (status) {
+        return {
+          externalMessageId: String(statusEvent.MessageIDs[0]),
+          status,
+          timestamp: tsToDate(statusEvent?.Timestamp),
+        };
+      }
+    }
+
+    // Shape B
+    const bMsg = event?.message;
+    if (bMsg && (bMsg.messageid || bMsg.id)) {
+      const stateStr = String(bMsg.status || event?.state || '').toLowerCase();
+      const numeric = typeof bMsg.ack === 'number' ? bMsg.ack : undefined;
+      const status =
+        numeric !== undefined ? numericAckMap[numeric] : stringStatusMap[stateStr];
+      if (status) {
+        return {
+          externalMessageId: String(bMsg.messageid || bMsg.id),
+          status,
+          timestamp: tsToDate(bMsg.timestamp || bMsg.messageTimestamp),
+        };
+      }
+    }
+
+    // Shape C
+    if (Array.isArray(event?.messages)) {
+      const first = event.messages.find((m: any) => m?.id && (m.ack != null || m.status));
+      if (first) {
+        const numeric = typeof first.ack === 'number' ? first.ack : undefined;
+        const status =
+          numeric !== undefined
+            ? numericAckMap[numeric]
+            : stringStatusMap[String(first.status || '').toLowerCase()];
+        if (status) {
+          return {
+            externalMessageId: String(first.id),
+            status,
+            timestamp: tsToDate(first.timestamp),
+          };
+        }
+      }
+    }
+
+    return null;
   }
 
   denormalize(
@@ -84,7 +150,7 @@ export class ZappfyMessageMapper {
           endpoint: '/send/media',
           payload: {
             number,
-            media: message.content.mediaUrl,
+            file: message.content.mediaUrl,
             type: 'image',
             caption: message.content.caption || '',
           },
@@ -95,8 +161,11 @@ export class ZappfyMessageMapper {
           endpoint: '/send/media',
           payload: {
             number,
-            media: message.content.mediaUrl,
-            type: 'audio',
+            file: message.content.mediaUrl,
+            // "ptt" renders as a native voice note on WhatsApp. "audio" would
+            // render as a forwarded audio file, which is wrong UX for a
+            // message the user just recorded in the app.
+            type: 'ptt',
           },
         };
 
@@ -105,7 +174,7 @@ export class ZappfyMessageMapper {
           endpoint: '/send/media',
           payload: {
             number,
-            media: message.content.mediaUrl,
+            file: message.content.mediaUrl,
             type: 'video',
             caption: message.content.caption || '',
           },
@@ -116,9 +185,10 @@ export class ZappfyMessageMapper {
           endpoint: '/send/media',
           payload: {
             number,
-            media: message.content.mediaUrl,
+            file: message.content.mediaUrl,
             type: 'document',
-            caption: message.content.fileName || '',
+            filename: message.content.fileName || '',
+            caption: message.content.caption || '',
           },
         };
 
@@ -127,17 +197,20 @@ export class ZappfyMessageMapper {
           endpoint: '/send/media',
           payload: {
             number,
-            media: message.content.mediaUrl,
+            file: message.content.mediaUrl,
             type: 'sticker',
           },
         };
 
       case MessageContentType.LOCATION:
         return {
-          endpoint: '/send/text',
+          endpoint: '/send/location',
           payload: {
             number,
-            text: `📍 Location: ${message.content.latitude}, ${message.content.longitude}`,
+            latitude: String(message.content.latitude),
+            longitude: String(message.content.longitude),
+            name: message.content.text || '',
+            address: '',
           },
         };
 
@@ -145,8 +218,8 @@ export class ZappfyMessageMapper {
         return {
           endpoint: '/message/react',
           payload: {
-            number,
-            msgId: message.content.reaction?.targetMessageId,
+            chatid: contactExternalId,
+            messageid: message.content.reaction?.targetMessageId,
             reaction: message.content.reaction?.emoji,
           },
         };
@@ -160,117 +233,87 @@ export class ZappfyMessageMapper {
   }
 
   private resolveContentType(msg: any): MessageContentType {
-    if (msg.conversation || msg.extendedTextMessage) return MessageContentType.TEXT;
-    if (msg.imageMessage) return MessageContentType.IMAGE;
-    if (msg.audioMessage) return MessageContentType.AUDIO;
-    if (msg.videoMessage) return MessageContentType.VIDEO;
-    if (msg.documentMessage || msg.documentWithCaptionMessage) return MessageContentType.DOCUMENT;
-    if (msg.stickerMessage) return MessageContentType.STICKER;
-    if (msg.locationMessage || msg.liveLocationMessage) return MessageContentType.LOCATION;
-    if (msg.reactionMessage) return MessageContentType.REACTION;
-    if (msg.buttonsResponseMessage || msg.listResponseMessage) return MessageContentType.INTERACTIVE;
+    const type = (msg.messageType || '').toLowerCase();
+    if (type.includes('text') || type === 'conversation' || type === 'extendedtextmessage')
+      return MessageContentType.TEXT;
+    if (type.includes('image')) return MessageContentType.IMAGE;
+    if (type.includes('audio') || type.includes('ptt')) return MessageContentType.AUDIO;
+    if (type.includes('video')) return MessageContentType.VIDEO;
+    if (type.includes('document')) return MessageContentType.DOCUMENT;
+    if (type.includes('sticker')) return MessageContentType.STICKER;
+    if (type.includes('location')) return MessageContentType.LOCATION;
+    if (type.includes('reaction')) return MessageContentType.REACTION;
+    if (type.includes('button') || type.includes('list')) return MessageContentType.INTERACTIVE;
     return MessageContentType.TEXT;
   }
 
   private extractContent(msg: any): NormalizedInboundMessage['content'] {
-    if (msg.conversation) {
-      return { text: msg.conversation };
+    const raw = msg.content;
+    const type = (msg.messageType || '').toLowerCase();
+
+    // Zappfy sends content as plain string for Conversation type
+    if (typeof raw === 'string') {
+      return { text: raw };
     }
-    if (msg.extendedTextMessage) {
-      return { text: msg.extendedTextMessage.text };
+
+    const content = raw || {};
+
+    if (type.includes('text') || type === 'conversation' || type === 'extendedtextmessage') {
+      return { text: content.text || content.conversation || '' };
     }
-    if (msg.imageMessage) {
+    if (type.includes('image')) {
       return {
-        mediaId: msg.imageMessage.mediaKey,
-        mediaUrl: msg.imageMessage.url,
-        mimeType: msg.imageMessage.mimetype,
-        fileSize: msg.imageMessage.fileLength,
-        caption: msg.imageMessage.caption,
+        mediaUrl: content.url || content.mediaUrl,
+        mimeType: content.mimetype,
+        fileSize: content.fileLength,
+        caption: content.caption,
       };
     }
-    if (msg.audioMessage) {
+    if (type.includes('audio') || type.includes('ptt')) {
       return {
-        mediaId: msg.audioMessage.mediaKey,
-        mediaUrl: msg.audioMessage.url,
-        mimeType: msg.audioMessage.mimetype,
-        fileSize: msg.audioMessage.fileLength,
+        mediaUrl: content.url || content.mediaUrl,
+        mimeType: content.mimetype,
+        fileSize: content.fileLength,
       };
     }
-    if (msg.videoMessage) {
+    if (type.includes('video')) {
       return {
-        mediaId: msg.videoMessage.mediaKey,
-        mediaUrl: msg.videoMessage.url,
-        mimeType: msg.videoMessage.mimetype,
-        fileSize: msg.videoMessage.fileLength,
-        caption: msg.videoMessage.caption,
+        mediaUrl: content.url || content.mediaUrl,
+        mimeType: content.mimetype,
+        fileSize: content.fileLength,
+        caption: content.caption,
       };
     }
-    if (msg.documentMessage) {
+    if (type.includes('document')) {
       return {
-        mediaId: msg.documentMessage.mediaKey,
-        mediaUrl: msg.documentMessage.url,
-        mimeType: msg.documentMessage.mimetype,
-        fileName: msg.documentMessage.fileName,
-        fileSize: msg.documentMessage.fileLength,
+        mediaUrl: content.url || content.mediaUrl,
+        mimeType: content.mimetype,
+        fileName: content.fileName,
+        fileSize: content.fileLength,
+        caption: content.caption,
       };
     }
-    if (msg.documentWithCaptionMessage) {
-      const doc = msg.documentWithCaptionMessage.message?.documentMessage;
+    if (type.includes('sticker')) {
       return {
-        mediaId: doc?.mediaKey,
-        mediaUrl: doc?.url,
-        mimeType: doc?.mimetype,
-        fileName: doc?.fileName,
-        fileSize: doc?.fileLength,
-        caption: doc?.caption,
+        mediaUrl: content.url || content.mediaUrl,
+        mimeType: content.mimetype,
       };
     }
-    if (msg.stickerMessage) {
+    if (type.includes('location')) {
       return {
-        mediaId: msg.stickerMessage.mediaKey,
-        mediaUrl: msg.stickerMessage.url,
-        mimeType: msg.stickerMessage.mimetype,
+        latitude: content.degreesLatitude,
+        longitude: content.degreesLongitude,
+        text: content.name || content.address,
       };
     }
-    if (msg.locationMessage) {
-      return {
-        latitude: msg.locationMessage.degreesLatitude,
-        longitude: msg.locationMessage.degreesLongitude,
-        text: msg.locationMessage.name || msg.locationMessage.address,
-      };
-    }
-    if (msg.liveLocationMessage) {
-      return {
-        latitude: msg.liveLocationMessage.degreesLatitude,
-        longitude: msg.liveLocationMessage.degreesLongitude,
-      };
-    }
-    if (msg.reactionMessage) {
+    if (type.includes('reaction')) {
       return {
         reaction: {
-          emoji: msg.reactionMessage.text,
-          targetMessageId: msg.reactionMessage.key?.id || '',
+          emoji: content.text || msg.text || '',
+          targetMessageId: msg.reaction || content.key?.ID || '',
         },
       };
     }
-    if (msg.buttonsResponseMessage) {
-      return {
-        interactive: {
-          type: 'button',
-          buttonId: msg.buttonsResponseMessage.selectedButtonId,
-        },
-        text: msg.buttonsResponseMessage.selectedDisplayText,
-      };
-    }
-    if (msg.listResponseMessage) {
-      return {
-        interactive: {
-          type: 'list',
-          listRowId: msg.listResponseMessage.singleSelectReply?.selectedRowId,
-        },
-        text: msg.listResponseMessage.title,
-      };
-    }
-    return { text: '[Unsupported message type]' };
+    return { text: content.text || '[Unsupported message type]' };
   }
 }

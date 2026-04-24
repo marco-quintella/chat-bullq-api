@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -55,9 +56,36 @@ export class ChannelsController {
 
   @Delete(':id')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
-  @ApiOperation({ summary: 'Delete a channel (soft delete)' })
-  remove(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
-    return this.service.remove(id, orgId);
+  @ApiOperation({
+    summary:
+      'Soft-delete a channel. Requires ?confirmName=<exact channel name>.',
+  })
+  remove(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @Query('confirmName') confirmName?: string,
+  ) {
+    return this.service.remove(id, orgId, confirmName);
+  }
+
+  @Post(':id/sync')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Sync channel — import chats, contacts, and messages from provider' })
+  syncChannel(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
+    return this.service.syncChannel(id, orgId);
+  }
+
+  @Get(':id/sync/status')
+  @ApiOperation({ summary: 'Get latest sync job status for a channel' })
+  getSyncStatus(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
+    return this.service.getSyncStatus(id, orgId);
+  }
+
+  @Post(':id/sync/cancel')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Cancel active sync for a channel' })
+  cancelSync(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
+    return this.service.cancelSync(id, orgId);
   }
 
   @Post(':id/test')

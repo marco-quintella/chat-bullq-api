@@ -11,24 +11,68 @@ import {
 export class InstagramMessageMapper {
   normalizeInbound(messaging: Record<string, any>): NormalizedInboundMessage | null {
     const senderId = messaging.sender?.id;
+    const recipientId = messaging.recipient?.id;
     const message = messaging.message;
     if (!senderId || !message) return null;
 
+    const isEcho = !!message.is_echo;
+    // For echo events (sent from IG app by our account), the "contact" is the recipient,
+    // not the sender (which is us).
+    const externalContactId = isEcho ? recipientId : senderId;
+    if (!externalContactId) return null;
+
     const result: NormalizedInboundMessage = {
       externalMessageId: message.mid,
-      externalContactId: senderId,
+      externalContactId,
       channelType: ChannelType.INSTAGRAM,
       timestamp: new Date(messaging.timestamp),
       type: this.resolveContentType(message),
       content: this.extractContent(message),
+      isEcho,
       rawPayload: messaging,
     };
 
-    if (message.reply_to?.mid) {
-      result.replyTo = { externalMessageId: message.reply_to.mid };
+    // Instagram reply contexts. `reply_to` may contain:
+    //   - mid (reply to a message)
+    //   - story { id, url } (reply to a story) — our core use case
+    //   - ad    { id, title } (reply to an ad)
+    // Story mentions arrive as attachments[type=story_mention] with a CDN url.
+    const replyTo = this.extractReplyContext(message);
+    if (replyTo) {
+      result.replyTo = replyTo;
     }
 
     return result;
+  }
+
+  private extractReplyContext(message: Record<string, any>): NormalizedInboundMessage['replyTo'] | undefined {
+    const rt = message.reply_to;
+    if (rt?.story?.id || rt?.story?.url) {
+      return {
+        story: {
+          id: rt.story.id ? String(rt.story.id) : undefined,
+          url: rt.story.url,
+          kind: 'reply',
+        },
+      };
+    }
+    if (rt?.ad?.id) {
+      return { ad: { id: String(rt.ad.id), title: rt.ad.title } };
+    }
+    if (rt?.mid) {
+      return { externalMessageId: String(rt.mid) };
+    }
+    // Story mention: surfaces as a standalone attachment, not as reply_to.
+    const attachment = message.attachments?.[0];
+    if (attachment?.type === 'story_mention') {
+      return {
+        story: {
+          url: attachment.payload?.url,
+          kind: 'mention',
+        },
+      };
+    }
+    return undefined;
   }
 
   normalizeStatus(messaging: Record<string, any>): StatusUpdate | null {
@@ -39,6 +83,21 @@ export class InstagramMessageMapper {
       externalMessageId: delivery.mids[0],
       status: 'delivered',
       timestamp: new Date(messaging.timestamp),
+    };
+  }
+
+  /**
+   * Meta sends `read` with a `watermark` timestamp (no mids).
+   * We use the watermark to flip status to READ for every matching outbound
+   * message up to that timestamp — the processor handles the bulk update.
+   */
+  normalizeReadStatus(messaging: Record<string, any>): StatusUpdate | null {
+    const read = messaging.read;
+    if (!read?.watermark) return null;
+    return {
+      externalMessageId: `ig-read-watermark:${read.watermark}`,
+      status: 'read',
+      timestamp: new Date(Number(read.watermark) || messaging.timestamp),
     };
   }
 

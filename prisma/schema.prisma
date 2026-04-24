@@ -104,8 +104,10 @@ model User {
 
   organizations         UserOrganization[]
   assignedConversations Conversation[]     @relation("AssignedAgent")
+  sentMessages          Message[]          @relation("MessageSender")
   notifications         Notification[]
   pushSubscriptions     PushSubscription[]
+  sentInvitations       Invitation[]
 
   @@map("users")
 }
@@ -130,6 +132,7 @@ model Organization {
   quickReplies  QuickReply[]
   tags          Tag[]
   notifications Notification[]
+  invitations   Invitation[]
 
   @@map("organizations")
 }
@@ -141,6 +144,7 @@ model UserOrganization {
   role           OrgRole     @default(AGENT)
   agentStatus    AgentStatus @default(OFFLINE) @map("agent_status")
   maxConcurrent  Int         @default(5) @map("max_concurrent")
+  preferences    Json        @default("{}")
   joinedAt       DateTime    @default(now()) @map("joined_at")
 
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -150,6 +154,35 @@ model UserOrganization {
 
   @@unique([userId, organizationId])
   @@map("user_organizations")
+}
+
+// ─── Invitations ────────────────────────────────
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model Invitation {
+  id             String           @id @default(cuid())
+  organizationId String           @map("organization_id")
+  email          String
+  role           OrgRole          @default(AGENT)
+  token          String           @unique
+  status         InvitationStatus @default(PENDING)
+  invitedById    String           @map("invited_by_id")
+  expiresAt      DateTime         @map("expires_at")
+  acceptedAt     DateTime?        @map("accepted_at")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([email, status], name: "idx_invitation_email_status")
+  @@index([organizationId], name: "idx_invitation_org")
+  @@map("invitations")
 }
 
 // ─── Channel Hub ─────────────────────────────────
@@ -170,9 +203,76 @@ model Channel {
   contactChannels ContactChannel[]
   conversations   Conversation[]
   chatbotFlows    ChatbotFlowChannel[]
+  syncJobs        ChannelSyncJob[]
 
   @@index([organizationId, type], name: "idx_channel_org_type")
   @@map("channels")
+}
+
+// ─── Webhook Events (append-only audit + replay) ──
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  UNROUTED
+}
+
+model WebhookEvent {
+  id             String             @id @default(cuid())
+  channelId      String?            @map("channel_id")
+  channelType    ChannelType        @map("channel_type")
+  status         WebhookEventStatus @default(RECEIVED)
+  rawPayload     Json               @map("raw_payload")
+  headers        Json               @default("{}")
+  errorMessage   String?            @map("error_message")
+  receivedAt     DateTime           @default(now()) @map("received_at")
+  processedAt    DateTime?          @map("processed_at")
+
+  @@index([channelId, receivedAt(sort: Desc)], name: "idx_webhook_channel_time")
+  @@index([channelType, status, receivedAt(sort: Desc)], name: "idx_webhook_type_status")
+  @@map("webhook_events")
+}
+
+// ─── Channel Sync Jobs ───────────────────────────
+
+enum ChannelSyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ChannelSyncMode {
+  INITIAL
+  MANUAL
+  DELTA
+}
+
+model ChannelSyncJob {
+  id             String            @id @default(cuid())
+  channelId      String            @map("channel_id")
+  status         ChannelSyncStatus @default(PENDING)
+  mode           ChannelSyncMode   @default(INITIAL)
+  lookbackDays   Int               @default(90) @map("lookback_days")
+  startedAt      DateTime?         @map("started_at")
+  finishedAt     DateTime?         @map("finished_at")
+  conversationsTotal    Int        @default(0) @map("conversations_total")
+  conversationsImported Int        @default(0) @map("conversations_imported")
+  messagesImported      Int        @default(0) @map("messages_imported")
+  contactsImported      Int        @default(0) @map("contacts_imported")
+  errorMessage   String?           @map("error_message")
+  lastCursor     String?           @map("last_cursor")
+  metadata       Json              @default("{}")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt(sort: Desc)], name: "idx_sync_channel_time")
+  @@index([status], name: "idx_sync_status")
+  @@map("channel_sync_jobs")
 }
 
 // ─── Contacts ────────────────────────────────────
@@ -228,9 +328,11 @@ model Conversation {
   status          ConversationStatus @default(PENDING)
   subject         String?
   protocol        String?
+  isGroup         Boolean            @default(false) @map("is_group")
   lastMessageAt   DateTime?          @map("last_message_at")
   firstResponseAt DateTime?          @map("first_response_at")
   closedAt        DateTime?          @map("closed_at")
+  deletedAt       DateTime?          @map("deleted_at")
   metadata        Json               @default("{}")
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
@@ -293,6 +395,7 @@ model Message {
   content        Json
   externalId     String?            @map("external_id")
   status         MessageStatus      @default(QUEUED)
+  senderName     String?            @map("sender_name")
   senderId       String?            @map("sender_id")
   sentAt         DateTime?          @map("sent_at")
   deliveredAt    DateTime?          @map("delivered_at")
@@ -302,7 +405,9 @@ model Message {
   createdAt      DateTime           @default(now()) @map("created_at")
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?        @relation("MessageSender", fields: [senderId], references: [id], onDelete: SetNull)
 
+  @@unique([conversationId, externalId], name: "uq_msg_conv_external")
   @@index([conversationId, createdAt], name: "idx_msg_conv_time")
   @@index([externalId], name: "idx_msg_external_id")
   @@map("messages")

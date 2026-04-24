@@ -1,9 +1,11 @@
 import {
   Injectable,
   BadRequestException,
+  NotFoundException,
   Logger,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -47,5 +49,34 @@ export class UsersService {
     });
 
     this.logger.log(`Password changed for user ${userId}`);
+  }
+
+  async getPreferences(userId: string, organizationId: string) {
+    const membership = await this.prisma.userOrganization.findUnique({
+      where: { userId_organizationId: { userId, organizationId } },
+      select: { preferences: true },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Membership not found');
+    }
+
+    return (membership.preferences ?? {}) as Record<string, unknown>;
+  }
+
+  async updatePreferences(
+    userId: string,
+    organizationId: string,
+    patch: Record<string, unknown>,
+  ) {
+    const current = await this.getPreferences(userId, organizationId);
+    const merged = { ...current, ...patch };
+
+    await this.prisma.userOrganization.update({
+      where: { userId_organizationId: { userId, organizationId } },
+      data: { preferences: merged as Prisma.InputJsonValue },
+    });
+
+    return merged;
   }
 }

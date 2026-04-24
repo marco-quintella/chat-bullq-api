@@ -2,30 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Channel } from '@prisma/client';
 import axios, { AxiosInstance } from 'axios';
 
-interface ZappfyConfig {
-  baseUrl: string;
-  token: string;
-  instanceKey: string;
-}
-
 @Injectable()
 export class ZappfyHttpClient {
+  private static readonly BASE_URL = 'https://api.zappfy.io';
   private readonly logger = new Logger(ZappfyHttpClient.name);
 
-  private getClientConfig(channel: Channel): ZappfyConfig {
-    const config = channel.config as Record<string, any>;
-    return {
-      baseUrl: config.baseUrl || 'https://api.uazapi.com',
-      token: config.token,
-      instanceKey: config.instanceKey,
-    };
-  }
-
   private createClient(channel: Channel): AxiosInstance {
-    const cfg = this.getClientConfig(channel);
+    const config = channel.config as Record<string, any>;
     return axios.create({
-      baseURL: `${cfg.baseUrl}/instance/${cfg.instanceKey}`,
-      headers: { token: cfg.token },
+      baseURL: ZappfyHttpClient.BASE_URL,
+      headers: { token: config.token },
       timeout: 30000,
     });
   }
@@ -50,12 +36,49 @@ export class ZappfyHttpClient {
   async getInstanceStatus(channel: Channel): Promise<any> {
     const client = this.createClient(channel);
     try {
-      const response = await client.get('/status');
+      const response = await client.get('/instance/status');
       return response.data;
     } catch (error: any) {
       this.logger.error(`Zappfy status check failed: ${error.message}`);
       throw error;
     }
+  }
+
+  async fetchChats(
+    channel: Channel,
+    options: { limit?: number; offset?: number; isGroup?: boolean } = {},
+  ): Promise<any> {
+    return this.sendRequest(channel, '/chat/find', {
+      sort: '-wa_lastMsgTimestamp',
+      limit: options.limit ?? 50,
+      offset: options.offset ?? 0,
+      ...(options.isGroup !== undefined && { wa_isGroup: options.isGroup }),
+    });
+  }
+
+  async fetchMessages(
+    channel: Channel,
+    chatId: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<any> {
+    return this.sendRequest(channel, '/message/find', {
+      chatid: chatId,
+      limit,
+      offset,
+    });
+  }
+
+  async configureWebhook(
+    channel: Channel,
+    url: string,
+    events = ['messages', 'messages_update'],
+  ): Promise<any> {
+    return this.sendRequest(channel, '/webhook', {
+      enabled: true,
+      url,
+      events,
+    });
   }
 
   async getMediaBuffer(

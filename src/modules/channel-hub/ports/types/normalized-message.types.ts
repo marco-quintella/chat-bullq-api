@@ -28,6 +28,19 @@ export interface NormalizedMessageContent {
   interactive?: { type: string; buttonId?: string; listRowId?: string };
 }
 
+/**
+ * Rich reply context. On Instagram, users can reply to:
+ *  - a message (`externalMessageId` is the parent mid)
+ *  - a story       (`story.id` + `story.url` point to the original story)
+ *  - a mention     (same shape as story, with `kind: 'mention'`)
+ *  - an ad         (`ad.id` + `ad.title`)
+ */
+export interface ReplyContext {
+  externalMessageId?: string;
+  story?: { id?: string; url?: string; kind?: 'reply' | 'mention' };
+  ad?: { id?: string; title?: string };
+}
+
 export interface NormalizedInboundMessage {
   externalMessageId: string;
   externalContactId: string;
@@ -38,8 +51,11 @@ export interface NormalizedInboundMessage {
   timestamp: Date;
   type: MessageContentType;
   content: NormalizedMessageContent;
-  replyTo?: { externalMessageId: string };
+  replyTo?: ReplyContext;
   isForwarded?: boolean;
+  isGroup?: boolean;
+  isEcho?: boolean;
+  senderName?: string;
   rawPayload: unknown;
 }
 

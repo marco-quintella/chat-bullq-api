@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   ConflictException,
+  BadRequestException,
   Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -34,6 +35,16 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+
+    // Check if registering via invitation
+    if (dto.inviteToken) {
+      return this.registerWithInvite(dto, hashedPassword);
+    }
+
+    return this.registerNewWorkspace(dto, hashedPassword);
+  }
+
+  private async registerNewWorkspace(dto: RegisterDto, hashedPassword: string) {
     const slug = this.generateSlug(dto.name);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -91,17 +102,103 @@ export class AuthService {
     });
 
     const tokens = await this.generateTokens(result.user.id, result.user.email);
-
-    this.logger.log(`User registered: ${result.user.email}`);
+    this.logger.log(`User registered (new workspace): ${result.user.email}`);
 
     return {
       user: this.sanitizeUser(result.user),
-      organization: {
+      organizations: [{
         id: result.organization.id,
         name: result.organization.name,
         slug: result.organization.slug,
         role: 'OWNER',
-      },
+      }],
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    };
+  }
+
+  private async registerWithInvite(dto: RegisterDto, hashedPassword: string) {
+    // Validate the invitation
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { token: dto.inviteToken },
+      include: { organization: true },
+    });
+
+    if (!invitation) {
+      throw new BadRequestException('Invalid invitation token');
+    }
+    if (invitation.status !== 'PENDING') {
+      throw new BadRequestException(`Invitation has already been ${invitation.status.toLowerCase()}`);
+    }
+    if (invitation.expiresAt < new Date()) {
+      throw new BadRequestException('Invitation has expired');
+    }
+    if (invitation.email !== dto.email) {
+      throw new BadRequestException('Email does not match the invitation');
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          name: dto.name,
+          email: dto.email,
+          password: hashedPassword,
+        },
+      });
+
+      // Add user to the invited organization
+      const membership = await tx.userOrganization.create({
+        data: {
+          userId: user.id,
+          organizationId: invitation.organizationId,
+          role: invitation.role,
+        },
+      });
+
+      // Add to default department
+      const defaultDept = await tx.department.findFirst({
+        where: { organizationId: invitation.organizationId, isDefault: true },
+      });
+
+      if (defaultDept) {
+        await tx.departmentAgent.create({
+          data: {
+            departmentId: defaultDept.id,
+            userOrganizationId: membership.id,
+          },
+        });
+      }
+
+      // Mark invitation as accepted
+      await tx.invitation.update({
+        where: { id: invitation.id },
+        data: { status: 'ACCEPTED', acceptedAt: new Date() },
+      });
+
+      // Also accept any other pending invitations for this email
+      await tx.invitation.updateMany({
+        where: {
+          email: dto.email,
+          status: 'PENDING',
+          id: { not: invitation.id },
+        },
+        data: { status: 'EXPIRED' },
+      });
+
+      return { user, organization: invitation.organization };
+    });
+
+    const tokens = await this.generateTokens(result.user.id, result.user.email);
+    this.logger.log(`User registered via invitation: ${result.user.email} -> org ${result.organization.name}`);
+
+    return {
+      user: this.sanitizeUser(result.user),
+      organizations: [{
+        id: result.organization.id,
+        name: result.organization.name,
+        slug: result.organization.slug,
+        role: invitation.role,
+      }],
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
     };

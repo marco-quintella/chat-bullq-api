@@ -4,10 +4,17 @@ import {
   Post,
   Body,
   Query,
+  Param,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
+  BadRequestException,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery, ApiConsumes } from '@nestjs/swagger';
 import { MessagesService } from './messages.service';
+import { TranscriptionService } from './transcription.service';
+import { UploadsService } from './uploads.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../../common/guards';
 import { CurrentUser, CurrentOrg } from '../../../common/decorators';
@@ -17,7 +24,11 @@ import { CurrentUser, CurrentOrg } from '../../../common/decorators';
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('messages')
 export class MessagesController {
-  constructor(private readonly service: MessagesService) {}
+  constructor(
+    private readonly service: MessagesService,
+    private readonly transcription: TranscriptionService,
+    private readonly uploads: UploadsService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Send a message (enqueues for delivery)' })
@@ -27,6 +38,41 @@ export class MessagesController {
     @CurrentOrg('id') orgId: string,
   ) {
     return this.service.send(dto, userId, orgId);
+  }
+
+  @Post('uploads/audio')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: UploadsService.MAX_AUDIO_BYTES },
+    }),
+  )
+  @ApiOperation({ summary: 'Upload an audio file; returns public URL.' })
+  @ApiConsumes('multipart/form-data')
+  async uploadAudio(
+    @UploadedFile()
+    file?: { buffer: Buffer; mimetype: string; originalname?: string },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    return this.uploads.saveAudio({
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+  }
+
+  @Post(':id/transcribe')
+  @ApiOperation({
+    summary:
+      'Transcribe an audio message via Whisper. Cached in metadata.transcription.',
+  })
+  transcribe(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @Query('force') force?: string,
+  ) {
+    return this.transcription.transcribe(id, orgId, {
+      force: force === 'true' || force === '1',
+    });
   }
 
   @Get()
