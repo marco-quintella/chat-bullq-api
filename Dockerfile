@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.6
+
+FROM node:20-alpine AS deps
+RUN apk add --no-cache openssl
+WORKDIR /app
+COPY package.json yarn.lock ./
+RUN corepack enable && yarn install --frozen-lockfile
+
+FROM node:20-alpine AS builder
+RUN apk add --no-cache openssl
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate
+RUN yarn build
+
+FROM node:20-alpine AS runner
+RUN apk add --no-cache openssl curl tini
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3001
+
+COPY package.json yarn.lock ./
+RUN corepack enable && yarn install --frozen-lockfile --production && yarn cache clean
+
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+
+RUN mkdir -p /app/uploads
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -sf http://localhost:3001/api/v1/health || curl -sf http://localhost:3001/ || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
