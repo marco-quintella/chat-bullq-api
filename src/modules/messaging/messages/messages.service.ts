@@ -82,11 +82,12 @@ export class MessagesService {
       conversation.aiEnabled !== true &&
       (org?.aiAutoDisableOnHuman ?? true);
 
-    // Auto-assign: when a human replies, the conversation becomes "theirs".
-    // Only sets the assignee if it's currently unassigned (null) — never
-    // steals a conversation already owned by someone else. The frontend can
-    // still expose an explicit "atribuir a mim" button to override.
-    const shouldAutoAssign = conversation.assignedToId === null;
+    // Auto-assign: whoever replies owns the conversation. If the current
+    // assignee is someone else (or null), flip to the sender. Same-sender
+    // replies are a no-op. Yes, this can "steal" from a teammate — but the
+    // alternative (a conversation stuck on an inactive assignee while
+    // someone else is actively replying) is worse for accountability.
+    const shouldAutoAssign = conversation.assignedToId !== senderId;
 
     await this.prisma.conversation.update({
       where: { id: conversation.id },
