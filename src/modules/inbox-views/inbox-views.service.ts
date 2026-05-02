@@ -128,12 +128,6 @@ export class InboxViewsService {
     else if (filters.assignedTo && filters.assignedTo !== 'any')
       assignedToId = filters.assignedTo;
 
-    // ConversationsService.findInbox accepts a single channelId today; for
-    // now we pass the first one and let the rest be filtered post-fetch on
-    // the FE if needed. (Multi-channel is the most common case — single
-    // pick is the common UX path; extending findInbox to accept arrays is
-    // a small follow-up.)
-    const channelId = filters.channelIds?.[0];
     const status = filters.statuses?.length
       ? filters.statuses.join(',')
       : undefined;
@@ -142,7 +136,7 @@ export class InboxViewsService {
       organizationId,
       {
         status,
-        channelId,
+        channelIds: filters.channelIds,
         assignedToId,
         search: extraSearch,
       },

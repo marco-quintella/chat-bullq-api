@@ -6,6 +6,9 @@ export interface InboxFilters {
   organizationId: string;
   status?: ConversationStatus[];
   channelId?: string;
+  /** Used by inbox views that pin multiple channels at once. Combines
+   *  with accessibleChannelIds via intersection. */
+  channelIds?: string[];
   assignedToId?: string;
   search?: string;
   accessibleChannelIds?: string[];
@@ -38,17 +41,31 @@ export class ConversationsRepository {
         ? filters.status[0]
         : { in: filters.status };
     }
+    // Resolve the effective channel filter:
+    //   - filters.channelId  (single, from the topbar dropdown)
+    //   - filters.channelIds (multiple, from an inbox view)
+    //   - accessibleChannelIds (RBAC ceiling for AGENTs without ALL access)
+    // Final set = (requested ∩ accessible). Empty set returns nothing.
+    const requested =
+      filters.channelIds && filters.channelIds.length > 0
+        ? filters.channelIds
+        : filters.channelId
+          ? [filters.channelId]
+          : null;
+
     if (filters.accessibleChannelIds !== undefined) {
-      if (filters.channelId) {
-        if (!filters.accessibleChannelIds.includes(filters.channelId)) {
-          return { conversations: [], total: 0 };
-        }
-        where.channelId = filters.channelId;
+      if (requested) {
+        const allowed = requested.filter((id) =>
+          filters.accessibleChannelIds!.includes(id),
+        );
+        if (allowed.length === 0) return { conversations: [], total: 0 };
+        where.channelId = allowed.length === 1 ? allowed[0] : { in: allowed };
       } else {
         where.channelId = { in: filters.accessibleChannelIds };
       }
-    } else if (filters.channelId) {
-      where.channelId = filters.channelId;
+    } else if (requested) {
+      where.channelId =
+        requested.length === 1 ? requested[0] : { in: requested };
     }
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
     if (filters.search) {

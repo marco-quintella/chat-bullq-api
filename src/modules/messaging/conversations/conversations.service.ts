@@ -58,6 +58,7 @@ export class ConversationsService {
     filters: {
       status?: string;
       channelId?: string;
+      channelIds?: string[];
       assignedToId?: string;
       search?: string;
     },
@@ -75,6 +76,7 @@ export class ConversationsService {
       organizationId,
       status: parsedStatuses?.length ? parsedStatuses : undefined,
       channelId: filters.channelId,
+      channelIds: filters.channelIds,
       assignedToId: filters.assignedToId,
       search: filters.search,
       accessibleChannelIds: access === 'ALL' ? undefined : [...access],
