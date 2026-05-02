@@ -42,7 +42,9 @@ export class LlmService {
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
     const isAnthropic = req.modelId.startsWith('anthropic/');
     const messages = this.toOpenAiMessages(req.messages, isAnthropic);
-    const tools = req.tools ? this.toOpenAiTools(req.tools, isAnthropic) : undefined;
+    const tools = req.tools
+      ? this.toOpenAiTools(this.sanitizeTools(req.tools), isAnthropic)
+      : undefined;
 
     let response: any;
     try {
@@ -58,11 +60,29 @@ export class LlmService {
         usage: { include: true },
       } as any);
     } catch (err: any) {
+      // OpenAI SDK exposes provider error body under `err.error` (newer) or
+      // `err.response?.data` (older). Surface both so we can debug 400s
+      // instead of seeing a generic "Provider returned error".
+      const providerBody =
+        err?.error?.message ??
+        err?.error?.error?.message ??
+        err?.response?.data?.error?.message ??
+        err?.response?.data?.message;
+      const status = err?.status ?? err?.response?.status;
+      const detail = providerBody ?? err?.message ?? 'unknown';
+      const toolNames = tools?.map((t: any) => t.function?.name).join(',');
       this.logger.error(
-        `LLM call failed [${req.modelId}]: ${err?.message ?? err}`,
+        `LLM call failed [${req.modelId}] status=${status ?? '?'}: ${detail} | tools=[${toolNames ?? ''}]`,
       );
+      // Dump the offending tools schemas at debug level so the next 400 is
+      // easy to triage. Keep it short to avoid log spam.
+      if (status === 400 && tools) {
+        this.logger.debug(
+          `Tools dump: ${JSON.stringify(tools).slice(0, 4000)}`,
+        );
+      }
       throw new InternalServerErrorException(
-        `LLM provider error: ${err?.message ?? 'unknown'}`,
+        `LLM provider error (${status ?? 'no-status'}): ${detail}`,
       );
     }
 
@@ -142,6 +162,43 @@ export class LlmService {
         content: content as unknown as ChatCompletionMessageParam['content'],
       } as ChatCompletionMessageParam;
     });
+  }
+
+  /**
+   * Drops tools with obviously broken JSON Schema before they reach the
+   * provider. A single malformed schema (missing `type: object`, params not
+   * being an object, properties with empty type) makes the whole request
+   * 400 — and the agent can't recover from that. Better to lose one tool
+   * than the entire turn.
+   */
+  private sanitizeTools(tools: LlmToolDefinition[]): LlmToolDefinition[] {
+    const valid: LlmToolDefinition[] = [];
+    for (const t of tools) {
+      const reason = this.validateToolSchema(t);
+      if (reason) {
+        this.logger.warn(
+          `Dropping tool ${t.name} from LLM request: ${reason}`,
+        );
+        continue;
+      }
+      valid.push(t);
+    }
+    return valid;
+  }
+
+  private validateToolSchema(t: LlmToolDefinition): string | null {
+    if (!t.name || typeof t.name !== 'string') return 'missing name';
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(t.name))
+      return `invalid name "${t.name}" — must match [a-zA-Z0-9_-]{1,64}`;
+    if (!t.description || typeof t.description !== 'string')
+      return 'missing description';
+    const p = t.parameters as Record<string, unknown> | undefined;
+    if (!p || typeof p !== 'object') return 'parameters not an object';
+    if (p.type !== 'object')
+      return `parameters.type must be "object", got ${JSON.stringify(p.type)}`;
+    if (p.properties && typeof p.properties !== 'object')
+      return 'parameters.properties must be an object';
+    return null;
   }
 
   private toOpenAiTools(
