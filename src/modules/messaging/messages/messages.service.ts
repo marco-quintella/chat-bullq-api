@@ -82,10 +82,17 @@ export class MessagesService {
       conversation.aiEnabled !== true &&
       (org?.aiAutoDisableOnHuman ?? true);
 
+    // Auto-assign: when a human replies, the conversation becomes "theirs".
+    // Only sets the assignee if it's currently unassigned (null) — never
+    // steals a conversation already owned by someone else. The frontend can
+    // still expose an explicit "atribuir a mim" button to override.
+    const shouldAutoAssign = conversation.assignedToId === null;
+
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         lastMessageAt: new Date(),
+        ...(shouldAutoAssign ? { assignedToId: senderId } : {}),
         ...(shouldDisableAi
           ? {
               aiEnabled: false,
@@ -96,6 +103,27 @@ export class MessagesService {
           : {}),
       },
     });
+
+    if (shouldAutoAssign) {
+      this.realtimeGateway.emitToConversation(
+        conversation.id,
+        'conversation:assigned',
+        {
+          conversationId: conversation.id,
+          assigneeId: senderId,
+          reason: 'auto-assign-on-reply',
+        },
+      );
+      this.realtimeGateway.emitToChannel(
+        conversation.channelId,
+        'conversation:assigned',
+        {
+          conversationId: conversation.id,
+          assigneeId: senderId,
+          reason: 'auto-assign-on-reply',
+        },
+      );
+    }
 
     if (shouldDisableAi) {
       this.realtimeGateway.emitToConversation(
