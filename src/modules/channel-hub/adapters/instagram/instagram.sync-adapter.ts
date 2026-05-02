@@ -24,7 +24,7 @@ export class InstagramSyncAdapter implements HistorySyncPort {
     return {
       supportsHistoryImport: true,
       supportsDeltaSync: true,
-      defaultLookbackDays: 90,
+      defaultLookbackDays: 7,
       maxLookbackDays: 365,
     };
   }
