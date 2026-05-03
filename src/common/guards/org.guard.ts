@@ -59,6 +59,7 @@ export class OrgGuard implements CanActivate {
     request.accessibleChannelIds = await this.channelAccess.getAccessibleChannelIds(
       membership.id,
       membership.role,
+      membership.organizationId,
     );
 
     return true;

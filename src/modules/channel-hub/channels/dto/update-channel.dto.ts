@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsObject, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsObject, IsBoolean, IsIn } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateChannelDto {
@@ -38,4 +38,16 @@ export class UpdateChannelDto {
   @IsOptional()
   @IsBoolean()
   aiEnabled?: boolean | null;
+
+  /**
+   * Visibility scope:
+   * - ORG     → todos os membros da org enxergam (default).
+   * - PRIVATE → só membros com grant explícito enxergam, mesmo OWNER/ADMIN.
+   *   Ao virar PRIVATE, quem está fazendo a request ganha grant automático
+   *   pra não se trancar fora.
+   */
+  @ApiPropertyOptional({ enum: ['ORG', 'PRIVATE'] })
+  @IsOptional()
+  @IsIn(['ORG', 'PRIVATE'])
+  visibility?: 'ORG' | 'PRIVATE';
 }

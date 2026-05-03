@@ -34,6 +34,7 @@ export class ApiKeyStrategy extends PassportStrategy(Strategy, 'api-key') {
     (req as any).accessibleChannelIds = await this.channelAccess.getAccessibleChannelIds(
       result.membership.id,
       result.membership.role,
+      result.organization?.id,
     );
     return result.user;
   }

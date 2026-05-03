@@ -15,7 +15,10 @@ import { ZappfyHttpClient } from '../adapters/zappfy/zappfy.http-client';
 import { WhatsAppOfficialHttpClient } from '../adapters/whatsapp-official/whatsapp-official.http-client';
 import { InstagramHttpClient } from '../adapters/instagram/instagram.http-client';
 import { ChannelSyncOrchestrator } from '../sync/channel-sync.orchestrator';
-import type { ChannelAccess } from '../../iam/channel-access/channel-access.service';
+import {
+  ChannelAccessService,
+  type ChannelAccess,
+} from '../../iam/channel-access/channel-access.service';
 
 @Injectable()
 export class ChannelsService {
@@ -29,6 +32,7 @@ export class ChannelsService {
     private readonly instagramHttpClient: InstagramHttpClient,
     private readonly syncOrchestrator: ChannelSyncOrchestrator,
     private readonly prisma: PrismaService,
+    private readonly channelAccess: ChannelAccessService,
   ) {}
 
   async create(
@@ -181,9 +185,29 @@ export class ChannelsService {
     return channel;
   }
 
-  async update(id: string, organizationId: string, dto: UpdateChannelDto) {
+  async update(
+    id: string,
+    organizationId: string,
+    dto: UpdateChannelDto,
+    callerUserOrganizationId?: string,
+  ) {
     await this.findOne(id, organizationId);
-    return this.repository.update(id, dto);
+
+    // Visibility é tratado por caminho separado pra garantir auto-grant.
+    const { visibility, ...rest } = dto;
+    if (visibility && callerUserOrganizationId) {
+      await this.channelAccess.setChannelVisibility(
+        id,
+        organizationId,
+        visibility,
+        callerUserOrganizationId,
+      );
+    }
+
+    if (Object.keys(rest).length === 0) {
+      return this.repository.findById(id);
+    }
+    return this.repository.update(id, rest);
   }
 
   /**

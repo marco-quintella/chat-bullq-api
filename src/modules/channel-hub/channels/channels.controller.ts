@@ -65,9 +65,10 @@ export class ChannelsController {
   update(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
+    @CurrentOrg('userOrganizationId') userOrganizationId: string,
     @Body() dto: UpdateChannelDto,
   ) {
-    return this.service.update(id, orgId, dto);
+    return this.service.update(id, orgId, dto, userOrganizationId);
   }
 
   @Delete(':id')

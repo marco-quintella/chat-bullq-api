@@ -27,6 +27,13 @@ enum ChannelType {
   INSTAGRAM
 }
 
+// ORG    = todos os membros da org enxergam (default — preserva o comportamento legado)
+// PRIVATE = só membros com grant explícito em ChannelAgent enxergam, mesmo OWNER/ADMIN
+enum ChannelVisibility {
+  ORG
+  PRIVATE
+}
+
 enum ConversationStatus {
   PENDING
   BOT
@@ -217,6 +224,7 @@ model Channel {
   config         Json
   webhookSecret  String?     @map("webhook_secret")
   isActive       Boolean     @default(true) @map("is_active")
+  visibility     ChannelVisibility @default(ORG)
   // Tri-state override: NULL=segue org.aiEnabled, true=força ON, false=força OFF.
   // Permite o operador desligar a IA num canal específico (ex: 1581 produção)
   // sem precisar mexer no toggle global da org.

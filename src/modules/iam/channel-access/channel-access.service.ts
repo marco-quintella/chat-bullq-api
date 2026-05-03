@@ -17,17 +17,73 @@ export class ChannelAccessService {
     return role === OrgRole.OWNER || role === OrgRole.ADMIN;
   }
 
+  /**
+   * Materializes which channels a user can see in the current org.
+   *
+   * Visibility rules:
+   * - Channel.visibility = 'ORG'   → any member with normal channel rights
+   *                                   (OWNER/ADMIN bypass, AGENT needs grant).
+   * - Channel.visibility = 'PRIVATE' → ONLY explicit grants in ChannelAgent
+   *                                    count, even for OWNER/ADMIN.
+   *
+   * Returns 'ALL' as an optimization when the user effectively sees every
+   * non-deleted channel in the org (legacy behavior — kept so existing
+   * Set-vs-ALL branches in callers don't need to materialize a Set on
+   * every request when no private channels exist).
+   */
   async getAccessibleChannelIds(
     userOrganizationId: string,
     role: OrgRole,
+    organizationId?: string,
   ): Promise<ChannelAccess> {
-    if (this.isBypassRole(role)) return 'ALL';
+    // AGENT: identical to before — only explicit grants.
+    if (!this.isBypassRole(role)) {
+      const rows = await this.prisma.channelAgent.findMany({
+        where: { userOrganizationId },
+        select: { channelId: true },
+      });
+      return new Set(rows.map((r) => r.channelId));
+    }
 
-    const rows = await this.prisma.channelAgent.findMany({
-      where: { userOrganizationId },
-      select: { channelId: true },
+    // OWNER/ADMIN path. We need the orgId to scope the query.
+    let orgId = organizationId;
+    if (!orgId) {
+      const userOrg = await this.prisma.userOrganization.findUnique({
+        where: { id: userOrganizationId },
+        select: { organizationId: true },
+      });
+      orgId = userOrg?.organizationId;
+    }
+    if (!orgId) {
+      // Defensive — shouldn't happen, fall back to no access.
+      return new Set<string>();
+    }
+
+    // Fast path: org has zero private channels → behave exactly like before
+    // ('ALL' shortcut means "no per-channel filter applied").
+    const privateCount = await this.prisma.channel.count({
+      where: { organizationId: orgId, visibility: 'PRIVATE', deletedAt: null },
     });
-    return new Set(rows.map((r) => r.channelId));
+    if (privateCount === 0) return 'ALL';
+
+    // Slow path: at least one private channel exists. Materialize the
+    // exact set so private channels without a grant are excluded — even
+    // for OWNERs.
+    const channels = await this.prisma.channel.findMany({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        OR: [
+          { visibility: 'ORG' },
+          {
+            visibility: 'PRIVATE',
+            channelAgents: { some: { userOrganizationId } },
+          },
+        ],
+      },
+      select: { id: true },
+    });
+    return new Set(channels.map((c) => c.id));
   }
 
   hasAccess(access: ChannelAccess, channelId: string): boolean {
@@ -101,11 +157,8 @@ export class ChannelAccessService {
     grantedById: string,
   ): Promise<{ added: string[]; removed: string[]; userId: string }> {
     const membership = await this.getMembership(organizationId, userId);
-    if (this.isBypassRole(membership.role)) {
-      throw new BadRequestException(
-        'OWNER and ADMIN already see all channels — channel grants do not apply.',
-      );
-    }
+    // OWNER/ADMIN ainda bypassam canais ORG sem grant, mas grants explícitos
+    // continuam relevantes pra canais PRIVATE — então a operação é válida.
 
     const validChannels = await this.prisma.channel.findMany({
       where: { id: { in: channelIds }, organizationId, deletedAt: null },
@@ -165,11 +218,8 @@ export class ChannelAccessService {
     if (!channel) throw new NotFoundException('Channel not found');
 
     const membership = await this.getMembership(organizationId, userId);
-    if (this.isBypassRole(membership.role)) {
-      throw new BadRequestException(
-        'OWNER and ADMIN already see all channels — granting is unnecessary.',
-      );
-    }
+    // Pra canais PRIVATE até OWNER/ADMIN precisa de grant explícito —
+    // por isso não bloqueamos mais a operação por role.
 
     await this.prisma.channelAgent.upsert({
       where: {
@@ -232,6 +282,57 @@ export class ChannelAccessService {
   }
 
   /**
+   * Switch a channel between ORG (everyone in the org sees it) and
+   * PRIVATE (only explicit grants see it). When flipping to PRIVATE,
+   * we auto-grant the caller so they don't lock themselves out — and
+   * if no other grants exist, only they keep access. The caller can
+   * then add others through the normal grant API.
+   */
+  async setChannelVisibility(
+    channelId: string,
+    organizationId: string,
+    visibility: 'ORG' | 'PRIVATE',
+    callerUserOrganizationId: string,
+  ): Promise<{ id: string; visibility: 'ORG' | 'PRIVATE' }> {
+    const channel = await this.prisma.channel.findFirst({
+      where: { id: channelId, organizationId, deletedAt: null },
+      select: { id: true, visibility: true },
+    });
+    if (!channel) throw new NotFoundException('Channel not found');
+
+    if (channel.visibility === visibility) {
+      return { id: channel.id, visibility };
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.channel.update({
+        where: { id: channelId },
+        data: { visibility },
+      });
+
+      if (visibility === 'PRIVATE') {
+        // Auto-grant ao caller pra ele não perder acesso ao próprio canal.
+        await tx.channelAgent.upsert({
+          where: {
+            channelId_userOrganizationId: {
+              channelId,
+              userOrganizationId: callerUserOrganizationId,
+            },
+          },
+          update: {},
+          create: {
+            channelId,
+            userOrganizationId: callerUserOrganizationId,
+            grantedById: null,
+          },
+        });
+      }
+    });
+
+    return { id: channel.id, visibility };
+  }
+
+  /**
    * Members eligible to handle a conversation in the given channel — used by
    * the assignee picker. Includes OWNER/ADMIN (always eligible) and AGENTs
    * with an explicit grant. Excludes inactive users.
@@ -239,18 +340,27 @@ export class ChannelAccessService {
   async listEligibleAgents(organizationId: string, channelId: string) {
     const channel = await this.prisma.channel.findFirst({
       where: { id: channelId, organizationId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, visibility: true },
     });
     if (!channel) throw new NotFoundException('Channel not found');
+
+    // Pra canal PRIVATE, OWNER/ADMIN não é elegível automaticamente — só
+    // membros com grant explícito aparecem na lista de assignees.
+    const baseWhere =
+      channel.visibility === 'PRIVATE'
+        ? { channelAgents: { some: { channelId } } }
+        : {
+            OR: [
+              { role: { in: [OrgRole.OWNER, OrgRole.ADMIN] } },
+              { channelAgents: { some: { channelId } } },
+            ],
+          };
 
     const memberships = await this.prisma.userOrganization.findMany({
       where: {
         organizationId,
         user: { isActive: true, deletedAt: null },
-        OR: [
-          { role: { in: [OrgRole.OWNER, OrgRole.ADMIN] } },
-          { channelAgents: { some: { channelId } } },
-        ],
+        ...baseWhere,
       },
       include: {
         user: {
