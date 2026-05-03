@@ -6,6 +6,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -35,11 +36,13 @@ export class UpdateOrganizationDto {
 
   @ApiPropertyOptional({
     description:
-      'Business hours by weekday. Object with monday..sunday keys, each {enabled, windows: [["09:00","18:00"]]}.',
+      'Business hours by weekday. Object with monday..sunday keys, each {enabled, windows: [["09:00","18:00"]]}. Pass null to mean 24/7 (IA responde a qualquer hora).',
+    nullable: true,
   })
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsObject()
-  aiBusinessHours?: Record<string, unknown>;
+  aiBusinessHours?: Record<string, unknown> | null;
 
   @ApiPropertyOptional({
     description:
