@@ -35,9 +35,26 @@ interface StatusJobData {
   status: StatusUpdate;
 }
 
+/**
+ * Debounce window before firing the agent run. Two reasons we wait:
+ * 1) Customers usually send 2-3 messages in a row — without this, every
+ *    short message triggers a separate run, racing each other.
+ * 2) External flows (ManyChat, n8n, Zapier) often own the first reply on
+ *    a new conversation. If our agent answers in <1s the customer sees
+ *    two replies fighting for attention. 3s gives those flows room.
+ *
+ * Each new inbound message on the same conversation resets the timer —
+ * we only run the agent once per "burst".
+ */
+const AGENT_DEBOUNCE_MS = 3000;
+
 @Processor('inbound-messages', { concurrency: 10 })
 export class InboundMessageProcessor extends WorkerHost {
   private readonly logger = new Logger(InboundMessageProcessor.name);
+
+  /** In-memory debounce timers keyed by conversationId. Lost on restart by
+   *  design — a restart means we'd rather reply once late than not at all. */
+  private readonly pendingRuns = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -360,7 +377,62 @@ export class InboundMessageProcessor extends WorkerHost {
     });
     if (!triggerMessage) return;
 
-    await this.agentRunner.run({ conversation, triggerMessage });
+    this.scheduleAgentRun(conversationId, triggerMessageId);
+  }
+
+  /**
+   * Debounced trigger: replaces any in-flight timer for this conversation
+   * with a new one. The latest message always wins — older bursts get
+   * dropped because by the time the timer fires, we re-fetch the latest
+   * trigger anyway. Simple, no extra queue, no Redis state.
+   */
+  private scheduleAgentRun(conversationId: string, triggerMessageId: string) {
+    const existing = this.pendingRuns.get(conversationId);
+    if (existing) {
+      clearTimeout(existing);
+      this.logger.debug(
+        `Reset agent debounce for conv ${conversationId} (new trigger ${triggerMessageId})`,
+      );
+    }
+
+    const timer = setTimeout(async () => {
+      this.pendingRuns.delete(conversationId);
+      try {
+        // Re-fetch state — between scheduling and firing, the conversation
+        // may have been claimed by a human, paused, or resolved.
+        const conv = await this.prisma.conversation.findUnique({
+          where: { id: conversationId },
+        });
+        if (!conv) return;
+
+        const decision = await this.agentRouter.shouldHandle(conv);
+        if (!decision.handle) {
+          this.logger.debug(
+            `AI skipped after debounce for conv ${conversationId}: ${decision.reason}`,
+          );
+          return;
+        }
+
+        // Always run against the LATEST inbound message — bursts collapse
+        // into a single run on the most recent trigger.
+        const latestInbound = await this.prisma.message.findFirst({
+          where: { conversationId, direction: 'INBOUND' },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!latestInbound) return;
+
+        await this.agentRunner.run({
+          conversation: conv,
+          triggerMessage: latestInbound,
+        });
+      } catch (err: any) {
+        this.logger.error(
+          `Debounced agent run failed for conv ${conversationId}: ${err?.message ?? err}`,
+        );
+      }
+    }, AGENT_DEBOUNCE_MS);
+
+    this.pendingRuns.set(conversationId, timer);
   }
 
   private async processStatus(data: StatusJobData): Promise<any> {
