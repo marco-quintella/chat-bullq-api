@@ -34,6 +34,16 @@ export class ConversationsController {
   @ApiQuery({ name: 'search', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({
+    name: 'archived',
+    required: false,
+    description: 'exclude (default) | only | any',
+  })
+  @ApiQuery({
+    name: 'unread',
+    required: false,
+    description: 'When "true", returns only conversations with unread inbound messages for the current user',
+  })
   findInbox(
     @CurrentOrg('id') orgId: string,
     @CurrentUser('id') userId: string,
@@ -44,15 +54,48 @@ export class ConversationsController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('archived') archived?: string,
+    @Query('unread') unread?: string,
   ) {
+    const archivedScope =
+      archived === 'only' || archived === 'any' ? archived : 'exclude';
     return this.service.findInbox(
       orgId,
-      { status, channelId, assignedToId, search },
+      {
+        status,
+        channelId,
+        assignedToId,
+        search,
+        archived: archivedScope,
+        unreadOnly: unread === 'true' || unread === '1',
+      },
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),
       access,
       userId,
     );
+  }
+
+  @Post(':id/archive')
+  @ApiOperation({ summary: 'Archive a conversation' })
+  archive(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.setArchived(id, orgId, true, userId, access);
+  }
+
+  @Post(':id/unarchive')
+  @ApiOperation({ summary: 'Unarchive a conversation' })
+  unarchive(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.setArchived(id, orgId, false, userId, access);
   }
 
   @Post(':id/read')

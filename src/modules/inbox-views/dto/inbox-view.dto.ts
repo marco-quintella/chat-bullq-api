@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -57,6 +58,20 @@ export class InboxViewFiltersDto {
   @IsArray()
   @IsString({ each: true })
   conversationIds?: string[];
+
+  /**
+   * Archive scope. Default 'exclude' — main inbox hides archived. The
+   * built-in "Archived" view sets this to 'only'.
+   */
+  @IsOptional()
+  @IsString()
+  @IsIn(['exclude', 'only', 'any'])
+  archived?: 'exclude' | 'only' | 'any';
+
+  /** When true, restrict to conversations with unread inbound messages. */
+  @IsOptional()
+  @IsBoolean()
+  unreadOnly?: boolean;
 }
 
 export class CreateInboxViewDto {

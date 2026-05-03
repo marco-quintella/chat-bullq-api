@@ -19,11 +19,81 @@ export class InboxViewsService {
     private readonly conversationsService: ConversationsService,
   ) {}
 
+  /**
+   * Built-in inbox views every user gets. Created lazily on first list()
+   * so existing users pick them up without a backfill migration. Marked
+   * with `metadata.builtin = true` so the UI can render an immutable
+   * pin (no rename/delete).
+   */
+  private static readonly BUILTIN_VIEWS: Array<{
+    name: string;
+    icon: string;
+    color: string;
+    filters: Record<string, any>;
+  }> = [
+    {
+      name: 'Archived',
+      icon: 'Archive',
+      color: '#6b7280',
+      filters: { archived: 'only' },
+    },
+  ];
+
   async list(organizationId: string, userId: string) {
+    await this.ensureBuiltinViews(organizationId, userId);
     return this.prisma.inboxView.findMany({
       where: { organizationId, userId },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
     });
+  }
+
+  /**
+   * Idempotently inserts the built-in views the first time a user lists
+   * their inbox-views. Cheap because we only insert what's missing — and
+   * the metadata flag identifies them across runs.
+   */
+  private async ensureBuiltinViews(organizationId: string, userId: string) {
+    const existing = await this.prisma.inboxView.findMany({
+      where: { organizationId, userId },
+      select: { name: true, metadata: true },
+    });
+    const haveBuiltin = new Set(
+      existing
+        .filter(
+          (v) =>
+            v.metadata &&
+            typeof v.metadata === 'object' &&
+            (v.metadata as any).builtin === true,
+        )
+        .map((v) => v.name),
+    );
+
+    const missing = InboxViewsService.BUILTIN_VIEWS.filter(
+      (b) => !haveBuiltin.has(b.name),
+    );
+    if (missing.length === 0) return;
+
+    const max = await this.prisma.inboxView.findFirst({
+      where: { userId },
+      orderBy: { order: 'desc' },
+      select: { order: true },
+    });
+    let nextOrder = (max?.order ?? -1) + 1;
+
+    for (const b of missing) {
+      await this.prisma.inboxView.create({
+        data: {
+          organizationId,
+          userId,
+          name: b.name,
+          icon: b.icon,
+          color: b.color,
+          filters: b.filters as object,
+          metadata: { builtin: true } as object,
+          order: nextOrder++,
+        },
+      });
+    }
   }
 
   async findOne(id: string, organizationId: string, userId: string) {
@@ -142,6 +212,8 @@ export class InboxViewsService {
         tagIds: filters.tagIds,
         assignedToId,
         search: extraSearch,
+        archived: filters.archived,
+        unreadOnly: filters.unreadOnly,
       },
       page,
       limit,

@@ -375,6 +375,14 @@ model Conversation {
   reopenedAt      DateTime?          @map("reopened_at")
   reopenedCount   Int                @default(0) @map("reopened_count")
   deletedAt       DateTime?          @map("deleted_at")
+
+  // ─── Archive state ──────────────────────────────
+  // Orthogonal to `status` — archived conversations are hidden from the
+  // main inbox but their status (OPEN/PENDING/etc.) is preserved so they
+  // re-appear in the right place when unarchived.
+  isArchived     Boolean   @default(false) @map("is_archived")
+  archivedAt     DateTime? @map("archived_at")
+  archivedById   String?   @map("archived_by_id")
   metadata        Json               @default("{}")
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
@@ -408,6 +416,7 @@ model Conversation {
   @@index([organizationId, status], name: "idx_conv_org_status")
   @@index([organizationId, assignedToId], name: "idx_conv_org_agent")
   @@index([organizationId, channelId], name: "idx_conv_org_channel")
+  @@index([organizationId, isArchived], name: "idx_conv_org_archived")
   @@index([contactId], name: "idx_conv_contact")
   @@index([lastMessageAt], name: "idx_conv_last_msg")
   @@map("conversations")
@@ -1060,6 +1069,7 @@ model InboxView {
   icon           String? // lucide-react icon name (Inbox, MessageSquare, ...)
   color          String? // tailwind color hint: "green", "pink", "violet", ...
   filters        Json     @default("{}") // { channelIds, statuses, assignedTo, tagIds, hasUnread }
+  metadata       Json     @default("{}") // { builtin: true } — locks view from rename/delete in UI
   order          Int      @default(0)
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")

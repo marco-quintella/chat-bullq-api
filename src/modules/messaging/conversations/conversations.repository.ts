@@ -21,6 +21,19 @@ export interface InboxFilters {
   assignedToId?: string;
   search?: string;
   accessibleChannelIds?: string[];
+  /**
+   * Archive scope:
+   *   - 'exclude' (default) — hide archived conversations from the list.
+   *   - 'only'              — show only archived conversations.
+   *   - 'any'               — ignore archive flag entirely.
+   */
+  archived?: 'exclude' | 'only' | 'any';
+  /**
+   * When true, only conversations with at least one inbound message newer
+   * than the user's `lastReadAt` cursor (or with no read row at all) are
+   * returned. Requires `currentUserId` — without it, the flag is a no-op.
+   */
+  unreadOnly?: boolean;
 }
 
 @Injectable()
@@ -49,6 +62,13 @@ export class ConversationsRepository {
       // conversations kept showing up as phantom duplicates of the live ones.
       deletedAt: null,
     };
+
+    // Archive scope. The default inbox hides archived conversations; an
+    // explicit "Archived" view passes archived='only'; legacy callers that
+    // don't care can pass 'any'.
+    const archivedScope = filters.archived ?? 'exclude';
+    if (archivedScope === 'exclude') where.isArchived = false;
+    else if (archivedScope === 'only') where.isArchived = true;
 
     if (filters.status?.length) {
       where.status = filters.status.length === 1
@@ -108,6 +128,15 @@ export class ConversationsRepository {
       ];
     }
 
+    // Cheap pre-filter for "unread only": drop conversations that have no
+    // inbound messages at all. The accurate per-user unread check (against
+    // ConversationRead.lastReadAt) happens post-query in attachUnreadCounts;
+    // we filter `unreadCount > 0` after enrichment so the row count returned
+    // here is an upper bound. Good enough — the typical unread set is small.
+    if (filters.unreadOnly && currentUserId) {
+      where.messages = { some: { direction: 'INBOUND' } };
+    }
+
     const [conversations, total] = await this.prisma.$transaction([
       this.prisma.conversation.findMany({
         where,
@@ -155,6 +184,13 @@ export class ConversationsRepository {
     const enriched = currentUserId
       ? await this.attachUnreadCounts(conversations, currentUserId)
       : conversations.map((c) => ({ ...c, unreadCount: 0 }));
+
+    // Final unread filter — happens after enrichment because the cursor
+    // comparison can't be expressed cleanly in Prisma's WHERE.
+    if (filters.unreadOnly && currentUserId) {
+      const filtered = enriched.filter((c) => c.unreadCount > 0);
+      return { conversations: filtered, total: filtered.length };
+    }
 
     return { conversations: enriched, total };
   }

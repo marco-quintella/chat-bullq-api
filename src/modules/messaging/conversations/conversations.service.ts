@@ -64,6 +64,8 @@ export class ConversationsService {
       tagIds?: string[];
       assignedToId?: string;
       search?: string;
+      archived?: 'exclude' | 'only' | 'any';
+      unreadOnly?: boolean;
     },
     page: number,
     limit: number,
@@ -87,6 +89,8 @@ export class ConversationsService {
       assignedToId: filters.assignedToId,
       search: filters.search,
       accessibleChannelIds: access === 'ALL' ? undefined : [...access],
+      archived: filters.archived,
+      unreadOnly: filters.unreadOnly,
     };
 
     const skip = (page - 1) * limit;
@@ -373,6 +377,34 @@ export class ConversationsService {
     await this.fsm.transition(id, target, actorId);
     const updated = await this.repository.findById(id);
     this.broadcastUpdate(updated as Conversation | null);
+    return updated;
+  }
+
+  async setArchived(
+    id: string,
+    organizationId: string,
+    archived: boolean,
+    actorId: string,
+    access: ChannelAccess = 'ALL',
+  ) {
+    await this.findOne(id, organizationId, access);
+    const updated = await this.prisma.conversation.update({
+      where: { id },
+      data: archived
+        ? { isArchived: true, archivedAt: new Date(), archivedById: actorId }
+        : { isArchived: false, archivedAt: null, archivedById: null },
+    });
+
+    await this.prisma.conversationAuditLog.create({
+      data: {
+        conversationId: id,
+        actorId,
+        action: archived ? 'CONVERSATION_ARCHIVED' : 'CONVERSATION_UNARCHIVED',
+        metadata: {},
+      },
+    });
+
+    this.broadcastUpdate(updated as Conversation);
     return updated;
   }
 
