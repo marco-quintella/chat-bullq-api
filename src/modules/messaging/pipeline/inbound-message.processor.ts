@@ -48,6 +48,17 @@ interface StatusJobData {
  */
 const AGENT_DEBOUNCE_MS = 3000;
 
+/**
+ * Message types that should NEVER trigger an agent run. REACTION (the
+ * thumbs-up etc) and SYSTEM events have no actionable content — making
+ * the LLM "respond" to a 👍 produces narrator-mode garbage like
+ * "[A mensagem do cliente é apenas um emoji de confirmação...]".
+ */
+const NON_TRIGGERING_MESSAGE_TYPES: PrismaContentType[] = [
+  PrismaContentType.REACTION,
+  PrismaContentType.SYSTEM,
+];
+
 @Processor('inbound-messages', { concurrency: 10 })
 export class InboundMessageProcessor extends WorkerHost {
   private readonly logger = new Logger(InboundMessageProcessor.name);
@@ -377,6 +388,14 @@ export class InboundMessageProcessor extends WorkerHost {
     });
     if (!triggerMessage) return;
 
+    // REACTION/SYSTEM nunca dispara IA — não tem conteúdo pra responder.
+    if (NON_TRIGGERING_MESSAGE_TYPES.includes(triggerMessage.type)) {
+      this.logger.debug(
+        `AI skipped: message type=${triggerMessage.type} not actionable`,
+      );
+      return;
+    }
+
     this.scheduleAgentRun(conversationId, triggerMessageId);
   }
 
@@ -413,13 +432,23 @@ export class InboundMessageProcessor extends WorkerHost {
           return;
         }
 
-        // Always run against the LATEST inbound message — bursts collapse
-        // into a single run on the most recent trigger.
+        // Always run against the LATEST actionable inbound — exclude
+        // reactions/system events that arrived during the debounce window.
+        // Otherwise the agent answers the 👍 instead of the real message.
         const latestInbound = await this.prisma.message.findFirst({
-          where: { conversationId, direction: 'INBOUND' },
+          where: {
+            conversationId,
+            direction: 'INBOUND',
+            type: { notIn: NON_TRIGGERING_MESSAGE_TYPES },
+          },
           orderBy: { createdAt: 'desc' },
         });
-        if (!latestInbound) return;
+        if (!latestInbound) {
+          this.logger.debug(
+            `AI skipped after debounce for conv ${conversationId}: no actionable inbound`,
+          );
+          return;
+        }
 
         await this.agentRunner.run({
           conversation: conv,
