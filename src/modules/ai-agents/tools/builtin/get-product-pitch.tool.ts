@@ -23,9 +23,14 @@ import { AiTool, ToolContext, ToolResult } from '../tool.types';
 export class GetProductPitchTool implements AiTool {
   private readonly logger = new Logger(GetProductPitchTool.name);
 
-  readonly name = 'getProductPitch';
+  // Nome neutro a propósito — a LLM tem tendência a "ecoar" o nome da
+  // tool nas mensagens ao cliente. Nomes como `getProductPitch` faziam
+  // ela soltar "vou te mandar o pitch" / "tem no catálogo". Renomeado
+  // pra `lookupOffering` (e a description não usa pitch/catálogo/pack)
+  // pra ela falar como gente.
+  readonly name = 'lookupOffering';
   readonly description =
-    'Puxa o pitch completo + preço + link de checkout de um produto do catálogo. Use ANTES de citar preço/link/diferenciais — não invente nada, sempre busque aqui. Slug vem da lista no system prompt.';
+    'Busca os detalhes oficiais (preço, condições, link de pagamento, principais entregas) do que pode resolver pro cliente. SEMPRE use isto ANTES de citar valor, prazo ou link — nunca invente. Slug vem da lista de soluções no system prompt.';
   readonly parameters = {
     type: 'object',
     additionalProperties: false,
@@ -34,7 +39,7 @@ export class GetProductPitchTool implements AiTool {
       slug: {
         type: 'string',
         description:
-          'Slug do produto (ex: "maestria"). Lista de slugs disponível no Catálogo do system prompt.',
+          'Identificador da solução (ex: "maestria"). Lista disponível na seção "Soluções que oferecemos" do system prompt.',
         minLength: 1,
         maxLength: 80,
       },
@@ -95,14 +100,14 @@ export class GetProductPitchTool implements AiTool {
         return {
           output: {
             ok: false,
-            error: `Produto "${slug}" não encontrado no catálogo. Confira a lista de slugs no Catálogo.`,
+            error: `Solução "${slug}" não encontrada. Confira os slugs na seção "Soluções que oferecemos" do system prompt.`,
           },
         };
       }
       return {
         output: {
           ok: false,
-          error: `Falha ao consultar catálogo: ${detail}`,
+          error: `Falha ao buscar detalhes da solução: ${detail}`,
         },
       };
     }

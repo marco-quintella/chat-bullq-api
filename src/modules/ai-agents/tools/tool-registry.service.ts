@@ -30,7 +30,7 @@ export class ToolRegistry {
     listAgents: ListAvailableAgentsTool,
     delegate: DelegateToAgentTool,
     handBack: HandBackToOrchestratorTool,
-    getProductPitch: GetProductPitchTool,
+    lookupOffering: GetProductPitchTool,
   ) {
     this.register(reply, ['ORCHESTRATOR', 'WORKER']);
     this.register(transfer, ['ORCHESTRATOR', 'WORKER']);
@@ -38,9 +38,9 @@ export class ToolRegistry {
     this.register(listAgents, ['ORCHESTRATOR']);
     this.register(delegate, ['ORCHESTRATOR']);
     this.register(handBack, ['WORKER']);
-    // Catálogo: tanto orquestrador quanto worker de vendas precisam.
-    // Workers de suporte que não vendem ignoram (mas ter na cinta não dói).
-    this.register(getProductPitch, ['ORCHESTRATOR', 'WORKER']);
+    // Detalhes oficiais (preço/condições/link) das soluções da org —
+    // ORCHESTRATOR e WORKER de vendas usam pra não inventar valor/link.
+    this.register(lookupOffering, ['ORCHESTRATOR', 'WORKER']);
 
     this.logger.log(
       `Built-in skills loaded: ${[...this.tools.keys()].join(', ')}`,
