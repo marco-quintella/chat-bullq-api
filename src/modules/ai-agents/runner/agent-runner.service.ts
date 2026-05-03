@@ -614,15 +614,16 @@ interface LlmMessageWithToolCalls extends LlmMessage {
 }
 
 /**
- * Removes hallucinated turn markers from LLM text output. Models occasionally
- * emit transcripts like "Human: oi" or "Assistant: ..." when the few-shot
- * examples in the system prompt include similar formatting. Without this
- * scrubbing, the fallback reply path sends those markers verbatim to the
- * customer (real incident: agent replied literally "Human: oi" via WhatsApp).
+ * Removes hallucinated turn markers and "narrator mode" metacomments from
+ * LLM text output. Models occasionally emit transcripts ("Human: oi") or
+ * worse, square-bracketed monologues ("[A mensagem é apenas X. Não devo
+ * responder...]") that should NEVER reach the customer.
  *
- * Strategy: strip a leading marker plus any further "Role: ..." lines that
- * should never reach the user. Returns trimmed text, or empty if everything
- * was a marker (which the caller treats as "don't send anything").
+ * Strategy:
+ *   1. Strip leading turn markers (Human:, Lead:, etc) — cascading
+ *   2. Truncate at any mid-text "Role:" line
+ *   3. If the WHOLE message is wrapped in [...] or ([...]) — narrator
+ *      meta-thought — return empty so the caller sends nothing
  */
 function sanitizeAssistantText(input: string): string {
   if (!input) return '';
@@ -630,16 +631,33 @@ function sanitizeAssistantText(input: string): string {
   const markerLine =
     /^\s*(human|user|assistant|ai|claude|model|lead|cliente|cliente:?|agent|você|voce|bot)\s*:\s*/i;
 
-  // Repeatedly strip leading turn markers, since hallucinations sometimes
-  // cascade ("Human: oi\nAssistant: ...").
   while (markerLine.test(text)) {
     text = text.replace(markerLine, '').trim();
   }
 
-  // If the body still contains a "Role:" mid-text on its own line (e.g.
-  // model echoed "Lead: comprou X"), drop everything from that line down.
   const splitIdx = text.search(/\n\s*(human|user|assistant|ai|claude|lead|cliente)\s*:\s*/i);
   if (splitIdx >= 0) text = text.slice(0, splitIdx).trim();
+
+  // Narrator-mode detection: the LLM occasionally produces a self-aware
+  // monologue wrapped entirely in brackets — "[A mensagem do cliente é
+  // apenas X. Não devo responder]". That's the model thinking out loud
+  // and the fallback was sending it as a chat reply. If the WHOLE text
+  // is wrapped in [...] (with optional surrounding parens or "(thinking)"
+  // labels), drop it. Real product replies that mention "[link]" or
+  // similar inline brackets aren't affected because they don't span the
+  // full message.
+  const narratorWrap = /^\(?\s*\[[\s\S]+\]\s*\)?$/;
+  if (narratorWrap.test(text)) return '';
+
+  // Also catch unwrapped narrator phrases that always start with the same
+  // self-referential constructions in pt-BR.
+  const narratorPrefixes = [
+    /^\s*\(?\s*o cliente (?:apenas|só|somente)\s/i,
+    /^\s*\(?\s*a mensagem (?:do cliente|dele|dela) (?:é|foi)\s/i,
+    /^\s*\(?\s*não (?:devo|preciso) responder\b/i,
+    /^\s*\(?\s*nada a (?:fazer|responder)\b/i,
+  ];
+  if (narratorPrefixes.some((re) => re.test(text))) return '';
 
   return text;
 }
