@@ -33,24 +33,37 @@ export class AgentRouterService {
     handle: boolean;
     reason?: string;
   }> {
-    // Tri-state conversation override:
-    //   conv.aiEnabled === false → forçada OFF, NÃO roda mesmo com tudo ligado
-    //   conv.aiEnabled === true  → forçada ON, sobrepõe org/horário
-    //   conv.aiEnabled === null  → segue regras globais
+    // Hierarquia de override (mais específico ganha):
+    //   conv.aiEnabled (true/false) — força resposta da conversa específica
+    //   channel.aiEnabled (true/false) — força no canal inteiro
+    //   org.aiEnabled (true/false) — global
+    // Qualquer "false" mais específico bloqueia mesmo se mais genérico está ON.
+    // "true" mais específico libera mesmo se mais genérico está OFF.
     const convOverride = conversation.aiEnabled;
 
     if (convOverride === false) {
       return { handle: false, reason: 'conversation.aiEnabled=force-off' };
     }
 
-    // Carrega org pra checagens globais (e cap de token mais abaixo).
-    const org = await this.prisma.organization.findUnique({
-      where: { id: conversation.organizationId },
-    });
+    // Carrega channel + org pra cascade de checks.
+    const [channel, org] = await Promise.all([
+      this.prisma.channel.findUnique({
+        where: { id: conversation.channelId },
+        select: { aiEnabled: true },
+      }),
+      this.prisma.organization.findUnique({
+        where: { id: conversation.organizationId },
+      }),
+    ]);
     if (!org) return { handle: false, reason: 'org-not-found' };
 
-    if (convOverride !== true) {
-      // Não tem override pra ON → regras globais valem.
+    const channelOverride = channel?.aiEnabled;
+    if (convOverride !== true && channelOverride === false) {
+      return { handle: false, reason: 'channel.aiEnabled=force-off' };
+    }
+
+    if (convOverride !== true && channelOverride !== true) {
+      // Sem override "ON" em conv nem channel → regras globais valem.
       if (!org.aiEnabled) {
         return { handle: false, reason: 'org.aiEnabled=false' };
       }
