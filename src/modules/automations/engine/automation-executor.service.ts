@@ -16,6 +16,7 @@ import {
 } from '../actions/action.types';
 import { OutboxService } from '../outbox/outbox.service';
 import { AutomationRedisService } from '../redis/automation-redis.service';
+import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import {
   AUTO_DISABLE_AFTER_FAILURES,
   CURRENT_AUTOMATION_SCHEMA_VERSION,
@@ -33,6 +34,7 @@ export class AutomationExecutorService {
     private readonly registry: ActionRegistryService,
     private readonly outbox: OutboxService,
     private readonly redis: AutomationRedisService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   // Main entry point. The processor calls this for every job. We never
@@ -292,7 +294,7 @@ export class AutomationExecutorService {
     },
   ) {
     try {
-      await this.prisma.automationRun.create({
+      const run = await this.prisma.automationRun.create({
         data: {
           automationId: automation.id,
           organizationId: automation.organizationId,
@@ -306,6 +308,13 @@ export class AutomationExecutorService {
           durationMs: data.durationMs,
           finishedAt: new Date(),
         },
+      });
+      // Broadcast to everyone in the org so any open Activity panel
+      // updates without polling. Payload carries the full row so the
+      // client can drop it straight into the list — no need to refetch.
+      this.realtime.emitToOrg(automation.organizationId, 'automation:run', {
+        automationId: automation.id,
+        run,
       });
     } catch (err) {
       this.logger.error(
