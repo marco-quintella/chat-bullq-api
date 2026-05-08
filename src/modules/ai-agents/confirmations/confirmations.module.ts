@@ -24,6 +24,6 @@ import { PENDING_ACTION_EXECUTOR_QUEUE } from './queue-names';
   ],
   controllers: [PendingActionController],
   providers: [PendingActionStorage, PendingActionService],
-  exports: [PendingActionService, BullModule],
+  exports: [PendingActionService, PendingActionStorage, BullModule],
 })
 export class ConfirmationsModule {}
