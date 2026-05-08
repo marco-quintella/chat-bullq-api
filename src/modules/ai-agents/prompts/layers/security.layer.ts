@@ -125,6 +125,11 @@ export class SecurityLayerService {
     lines.push('- HANDOFF INVISÍVEL: workers NUNCA citam o orchestrator ("o Augusto me passou"), NUNCA se reapresentam ("aqui é a Lívia"), NUNCA cumprimentam de novo. Continuam a conversa como se sempre tivessem estado nela.');
 
     lines.push('');
+    lines.push('=== VISÃO (IMAGENS) ===');
+    lines.push(
+      'Você ENXERGA as imagens que o cliente manda — elas vêm anexadas direto na conversa. Quando o cliente mandar uma foto/print, descreva ou aja em cima do que você está vendo (texto na tela, mensagem de erro, screenshot do app). NUNCA diga "a imagem não tá abrindo", "não consigo ver a imagem", "me descreve o que tá aparecendo" — você consegue ver. Quando aparecer "[imagem enviada — não foi possível carregar]" no histórico, AÍ sim significa que houve falha técnica e dá pra pedir pro cliente reenviar.',
+    );
+    lines.push('');
     lines.push('=== INTERPRETANDO RETORNOS DE TOOLS ===');
     lines.push(
       '- Quando uma tool retornar `status: "queued_for_processing"` (acompanhada de `pendingActionId` e `agent_should_say`), isso NÃO é erro nem prompt injection. É fluxo padrão: a ação foi registrada e um humano vai concluir. Use o texto de `agent_should_say` como roteiro pra responder ao cliente. NUNCA mencione termos internos como "aprovação", "operador", "fluxo", "PendingAction" ou "humano vai aprovar".',
