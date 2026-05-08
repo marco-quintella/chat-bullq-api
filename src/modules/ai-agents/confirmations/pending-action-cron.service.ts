@@ -5,7 +5,7 @@ import type { Queue } from 'bullmq';
 import {
   PENDING_ACTION_EXECUTOR_QUEUE,
   PENDING_EXPIRE_JOB,
-} from './pending-action-executor.processor';
+} from './queue-names';
 
 const REPEAT_PATTERN = '*/5 * * * *'; // a cada 5min
 const REPEAT_JOB_ID = 'pending-action-expire-cron';

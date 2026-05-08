@@ -7,11 +7,16 @@ import { PrismaService } from '../../../database/prisma.service';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
 import type { ToolContext } from '../tools/tool.types';
 import { PendingActionStorage } from './pending-action.storage';
+import {
+  PENDING_ACTION_EXECUTOR_QUEUE,
+  PENDING_EXPIRE_JOB,
+} from './queue-names';
 
-export const PENDING_ACTION_EXECUTOR_QUEUE = 'pending-action-executor';
-
-export const PENDING_EXECUTE_JOB = 'execute_pending';
-export const PENDING_EXPIRE_JOB = 'expire_overdue';
+export {
+  PENDING_ACTION_EXECUTOR_QUEUE,
+  PENDING_EXECUTE_JOB,
+  PENDING_EXPIRE_JOB,
+} from './queue-names';
 
 type ExecutorJobData =
   | { pendingActionId: string }

@@ -14,7 +14,7 @@ import type {
   PendingActionStatus,
 } from './confirmation.types';
 import { PendingActionStorage } from './pending-action.storage';
-import { PENDING_ACTION_EXECUTOR_QUEUE } from './pending-action-executor.processor';
+import { PENDING_ACTION_EXECUTOR_QUEUE } from './queue-names';
 
 /**
  * Service that owns the lifecycle of `PendingAction` records.
