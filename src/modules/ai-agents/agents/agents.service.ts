@@ -490,6 +490,7 @@ export class AgentsService {
     organizationId: string,
     options: {
       agentId?: string;
+      conversationId?: string;
       period?: '24h' | '7d' | '30d' | 'all';
       hasErrors?: boolean;
       status?: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
@@ -507,6 +508,9 @@ export class AgentsService {
       where: {
         organizationId,
         ...(options.agentId ? { agentId: options.agentId } : {}),
+        ...(options.conversationId
+          ? { conversationId: options.conversationId }
+          : {}),
         ...(since ? { startedAt: { gte: since } } : {}),
         ...(options.status ? { status: options.status } : {}),
         ...(options.finalAction

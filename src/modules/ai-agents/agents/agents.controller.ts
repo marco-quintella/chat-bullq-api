@@ -150,6 +150,7 @@ export class AgentsController {
   feed(
     @CurrentOrg('id') orgId: string,
     @Query('agentId') agentId?: string,
+    @Query('conversationId') conversationId?: string,
     @Query('period') period?: string,
     @Query('status') status?: string,
     @Query('finalAction') finalAction?: string,
@@ -159,6 +160,7 @@ export class AgentsController {
   ) {
     return this.service.listOrgRuns(orgId, {
       agentId,
+      conversationId,
       period: this.parsePeriodAll(period),
       status: this.parseRunStatus(status),
       finalAction,

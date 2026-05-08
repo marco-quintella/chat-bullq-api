@@ -4,6 +4,7 @@ import { PrismaModule } from '../../database/prisma.module';
 import { LlmModule } from './llm/llm.module';
 import { ToolsModule } from './tools/tools.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RealtimeModule } from '../realtime/realtime.module';
 import { PromptBuilderService } from './runner/prompt-builder.service';
 import { AiAgentRunnerService } from './runner/agent-runner.service';
 import { CatalogSyncService } from './runner/catalog-sync.service';
@@ -31,6 +32,7 @@ import { EvalsModule } from './evals/evals.module';
     LlmModule,
     ToolsModule,
     NotificationsModule,
+    RealtimeModule,
     PromptsModule,
     ClassifierModule,
     ShortTermMemoryModule,
