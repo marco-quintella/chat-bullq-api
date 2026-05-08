@@ -20,6 +20,7 @@ import { ClassifierModule } from './classifier/classifier.module';
 import { ShortTermMemoryModule } from './memory/short-term/short-term.module';
 import { LongTermMemoryModule } from './memory/long-term/long-term.module';
 import { ConfirmationsModule } from './confirmations/confirmations.module';
+import { ConfirmationExecutorModule } from './confirmations/confirmation-executor.module';
 import { RagModule } from './rag/rag.module';
 import { EvalsModule } from './evals/evals.module';
 
@@ -35,6 +36,7 @@ import { EvalsModule } from './evals/evals.module';
     ShortTermMemoryModule,
     LongTermMemoryModule,
     ConfirmationsModule,
+    ConfirmationExecutorModule,
     RagModule,
     EvalsModule,
   ],
